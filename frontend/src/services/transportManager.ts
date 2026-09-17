@@ -60,6 +60,9 @@ class TransportManager {
   private autoSelectBestTransport() {
     if (!this.availableTransports) return;
 
+    // Never break an already established, healthy WebSocket connection!
+    if (wsService.getStatus() === 'connected') return;
+
     for (const t of this.priority) {
       const details = this.availableTransports[t];
       if (details && details.available && (details.status === 'active' || details.status === 'ready' || details.status === 'connected')) {
@@ -75,9 +78,12 @@ class TransportManager {
     this.activeTransport = transport;
     if (this.availableTransports && this.availableTransports[transport]?.url) {
       const newUrl = this.availableTransports[transport].url!;
-      api.updateBaseUrl(newUrl);
-      wsService.disconnect();
-      wsService.connect();
+      // Only change base URL and reconnect if we are NOT currently connected and the URL actually changes
+      if (newUrl !== api.baseUrl && wsService.getStatus() !== 'connected') {
+        api.updateBaseUrl(newUrl);
+        wsService.disconnect();
+        wsService.connect();
+      }
     }
     this.notify();
   }

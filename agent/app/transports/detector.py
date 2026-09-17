@@ -39,12 +39,17 @@ def get_lan_ips() -> List[str]:
                 ips.append(a.address)
     return ips
 
-def detect_transports() -> Dict[str, Any]:
+def detect_transports(preferred_host: str = "") -> Dict[str, Any]:
     """Report status and endpoints for all supported connection modes."""
     lan_ips = get_lan_ips()
     tailscale_ip = get_tailscale_ip()
     port = settings.port
     
+    # Choose most appropriate default LAN IP
+    default_ip = lan_ips[0] if lan_ips else "localhost"
+    if preferred_host and (preferred_host in lan_ips or (preferred_host != "localhost" and preferred_host != "127.0.0.1")):
+        default_ip = preferred_host
+
     # Check for USB tethering network interface (Remote NDIS or Apple Mobile Device or USB Ethernet)
     usb_detected = False
     for name in psutil.net_if_addrs().keys():
@@ -60,7 +65,7 @@ def detect_transports() -> Dict[str, Any]:
             "status": "active" if lan_ips else "unavailable",
             "ips": lan_ips,
             "port": port,
-            "url": f"http://{lan_ips[0]}:{port}" if lan_ips else None
+            "url": f"http://{default_ip}:{port}" if default_ip else None
         },
         "hotspot": {
             "name": "Mobile Hotspot",

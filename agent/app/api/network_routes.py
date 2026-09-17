@@ -28,9 +28,13 @@ async def list_interfaces(current_device: PairedDevice = Depends(get_current_dev
     )
 
 @router.get("/transports", response_model=StructuredResponse)
-async def list_transports(current_device: PairedDevice = Depends(get_current_device)):
+async def list_transports(
+    request: Request,
+    current_device: PairedDevice = Depends(get_current_device)
+):
     """Inspect status of all transport layers."""
-    transports = detect_transports()
+    preferred_host = request.headers.get("host", "").split(":")[0]
+    transports = detect_transports(preferred_host=preferred_host)
     return StructuredResponse(
         success=True,
         action="network.transports",
