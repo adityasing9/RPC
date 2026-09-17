@@ -28,9 +28,12 @@ echo Adding Windows Firewall rule for RCPC (Port 8765)...
 netsh advfirewall firewall delete rule name="RCPC Agent" >nul 2>&1
 netsh advfirewall firewall add rule name="RCPC Agent" dir=in action=allow protocol=TCP localport=8765
 
+echo Updating Windows Task Scheduler (Allow running on battery without stopping)...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0; Set-ScheduledTask -TaskName 'RCPC_Windows_Agent' -Settings $settings -ErrorAction SilentlyContinue"
+
 echo.
 echo ========================================================
-echo   SUCCESS! Windows Firewall is now allowing port 8765.
+echo   SUCCESS! Windows Firewall & Background Task Configured!
 echo ========================================================
 echo.
 pause
