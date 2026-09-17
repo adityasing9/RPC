@@ -1,8 +1,10 @@
 """RCPC Windows Agent Application Factory."""
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends
+from pathlib import Path
+from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.logging_config import logger, audit_logger
 from app.security.rate_limiter import check_rate_limit_dependency
@@ -84,6 +86,12 @@ def create_app() -> FastAPI:
     app.include_router(activity_router)
     app.include_router(websocket_router)
 
+    @app.middleware("http")
+    async def add_private_network_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+        return response
+
     @app.get("/health")
     async def health_check():
         return {
@@ -91,6 +99,11 @@ def create_app() -> FastAPI:
             "agent": "RCPC Windows Agent",
             "version": settings.version
         }
+
+    # Mount Frontend PWA Static Files if built
+    dist_dir = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+    if dist_dir.exists() and (dist_dir / "index.html").exists():
+        app.mount("/", StaticFiles(directory=str(dist_dir), html=True), name="frontend")
 
     return app
 
