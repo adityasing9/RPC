@@ -59,8 +59,7 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version=settings.version,
         description="Secure Windows PC Management & Remote Control API",
-        lifespan=lifespan,
-        dependencies=[Depends(check_rate_limit_dependency)]
+        lifespan=lifespan
     )
 
     # CORS configuration

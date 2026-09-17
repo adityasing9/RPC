@@ -1,8 +1,8 @@
 """Rate limiting middleware and utility for RCPC Agent."""
 import time
 from collections import defaultdict
-from typing import Dict, List
-from fastapi import Request, HTTPException, status
+from typing import Dict, List, Optional
+from fastapi import Request, WebSocket, HTTPException, status
 from app.config import settings
 
 class RateLimiter:
@@ -29,8 +29,15 @@ class RateLimiter:
 
 rate_limiter = RateLimiter(requests_per_minute=settings.rate_limit_per_minute)
 
-async def check_rate_limit_dependency(request: Request):
+async def check_rate_limit_dependency(
+    request: Optional[Request] = None,
+    websocket: Optional[WebSocket] = None
+):
     """Dependency to check rate limit on incoming HTTP requests."""
-    # Exclude websocket and telemetry endpoints if desired
-    client_ip = request.client.host if request.client else "unknown"
-    rate_limiter.check_rate_limit(client_ip)
+    # Exclude persistent WebSocket connections from standard HTTP rate limits
+    if websocket is not None:
+        return
+    if request is not None and request.client:
+        client_ip = request.client.host
+        rate_limiter.check_rate_limit(client_ip)
+
