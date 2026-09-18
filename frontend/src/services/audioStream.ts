@@ -29,26 +29,33 @@ export class AudioStreamClient {
     }
 
     try {
-      // 1. Initialize and unlock AudioContext synchronously during user click
+      // 1. Initialize AudioContext at 48kHz to match Windows native rate
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      if (!this.audioCtx) {
-        this.audioCtx = new AudioContextClass();
+      if (!this.audioCtx || this.audioCtx.state === 'closed') {
+        try {
+          this.audioCtx = new AudioContextClass({ sampleRate: 48000 });
+        } catch {
+          this.audioCtx = new AudioContextClass();
+        }
       }
 
       if (this.audioCtx.state === 'suspended') {
         await this.audioCtx.resume();
       }
 
-      // Play a 1-sample silent burst to completely unlock mobile Safari / Chrome audio pipeline
+      // Mobile Safari / Chrome unlock burst
       try {
         const silentBuf = this.audioCtx.createBuffer(1, 1, 22050);
         const silentSource = this.audioCtx.createBufferSource();
         silentSource.buffer = silentBuf;
         silentSource.connect(this.audioCtx.destination);
         silentSource.start(0);
-      } catch (e) {
+      } catch {
         // ignore
       }
+
+      // Reset playback timeline
+      this.nextPlayTime = 0;
 
       // 2. Connect WebSocket
       const serverUrl = getDefaultServerUrl();
@@ -71,7 +78,7 @@ export class AudioStreamClient {
               this.sampleRate = meta.sampleRate || 48000;
               this.channels = meta.channels || 2;
             }
-          } catch (err) {
+          } catch {
             // ignore
           }
           return;
@@ -83,14 +90,14 @@ export class AudioStreamClient {
       };
 
       this.ws.onerror = () => {
-        this.stop('Audio connection failed');
+        this.stop('Audio connection error');
       };
 
       this.ws.onclose = () => {
         this.stop();
       };
     } catch (err: any) {
-      this.stop(err?.message || 'Audio playback init failed');
+      this.stop(err?.message || 'Audio playback failed to initialize');
     }
   }
 
@@ -110,8 +117,7 @@ export class AudioStreamClient {
     let audioBuffer: AudioBuffer;
     try {
       audioBuffer = this.audioCtx.createBuffer(targetChannels, numFrames, this.sampleRate);
-    } catch (e) {
-      // Fallback to audio context native sample rate if browser restricts
+    } catch {
       audioBuffer = this.audioCtx.createBuffer(targetChannels, numFrames, this.audioCtx.sampleRate);
     }
 
@@ -128,9 +134,15 @@ export class AudioStreamClient {
     source.connect(this.audioCtx.destination);
 
     const currentTime = this.audioCtx.currentTime;
-    // Jitter buffer: synchronize and smooth out network delivery
-    if (this.nextPlayTime < currentTime || this.nextPlayTime > currentTime + 0.20) {
-      this.nextPlayTime = currentTime + 0.04;
+
+    // Smooth continuous audio timeline scheduling:
+    // If playback fell behind the clock (underrun), anchor with a 100ms cushion.
+    // Otherwise, seamlessly append chunk directly after the previous chunk (sample-perfect).
+    if (this.nextPlayTime < currentTime) {
+      this.nextPlayTime = currentTime + 0.10;
+    } else if (this.nextPlayTime > currentTime + 0.80) {
+      // If lag accumulated over 800ms, resync smoothly
+      this.nextPlayTime = currentTime + 0.10;
     }
 
     source.start(this.nextPlayTime);
@@ -145,7 +157,7 @@ export class AudioStreamClient {
       this.ws.close();
       this.ws = null;
     }
-    if (this.audioCtx) {
+    if (this.audioCtx && this.audioCtx.state !== 'closed') {
       this.audioCtx.suspend().catch(() => {});
     }
     this.isRunning = false;

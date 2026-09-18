@@ -45,7 +45,7 @@ class AudioLoopbackManager:
     def subscribe(self, loop: asyncio.AbstractEventLoop) -> asyncio.Queue:
         """Register a new listener and start capture worker if needed."""
         with self._lock:
-            q: asyncio.Queue = asyncio.Queue(maxsize=8)
+            q: asyncio.Queue = asyncio.Queue(maxsize=50)
             self._subscribers.add(q)
             self._loop = loop
 
