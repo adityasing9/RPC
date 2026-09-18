@@ -390,7 +390,7 @@ export const Touchpad: React.FC = () => {
             }`}
           >
             {isAudioActive ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
-            <span className="hidden xs:inline">{isAudioActive ? 'Audio ON' : 'Muted'}</span>
+            <span>{isAudioActive ? 'Sound: ON' : 'Sound: OFF'}</span>
           </button>
 
           {/* Fullscreen Button */}

@@ -5,10 +5,9 @@ import logging
 import threading
 from typing import Optional, Set
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from app.auth.dependencies import get_current_device
-from app.auth.tokens import decode_access_token
-from app.auth.vault import device_vault, PairedDevice
+from fastapi.security import HTTPBearer
+from app.auth.dependencies import get_current_device, get_websocket_device
+from app.auth.vault import PairedDevice
 from app.logging_config import audit_logger
 
 logger = logging.getLogger("rcpc.audio")
@@ -23,8 +22,9 @@ class AudioLoopbackManager:
         self._lock = threading.Lock()
         self._subscribers: Set[asyncio.Queue] = set()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._thread: Optional[threading.Thread] = None
-        self._stop_event = threading.Event()
+        self._pa = None
+        self._in_stream = None
+        self._out_stream = None
         self._device_info: Optional[dict] = None
         self.sample_rate: int = 48000
         self.channels: int = 2
@@ -45,16 +45,12 @@ class AudioLoopbackManager:
     def subscribe(self, loop: asyncio.AbstractEventLoop) -> asyncio.Queue:
         """Register a new listener and start capture worker if needed."""
         with self._lock:
-            # Drop older chunks if queue exceeds 6 frames (~300ms) to ensure real-time latency
             q: asyncio.Queue = asyncio.Queue(maxsize=8)
             self._subscribers.add(q)
             self._loop = loop
 
-            if len(self._subscribers) == 1 or self._thread is None or not self._thread.is_alive():
-                self._stop_event.clear()
-                self._thread = threading.Thread(target=self._capture_worker, daemon=True, name="rcpc-audio-loopback")
-                self._thread.start()
-                logger.info("Audio loopback capture thread started")
+            if len(self._subscribers) == 1 or self._in_stream is None:
+                self._start_capture()
             return q
 
     def unsubscribe(self, q: asyncio.Queue):
@@ -62,90 +58,116 @@ class AudioLoopbackManager:
         with self._lock:
             self._subscribers.discard(q)
             if not self._subscribers:
-                self._stop_event.set()
-                logger.info("No audio subscribers remaining; stopping loopback capture")
+                self._stop_capture()
 
-    def _capture_worker(self):
-        """Background thread that reads audio from WASAPI loopback device and broadcasts."""
-        import pyaudiowpatch as pyaudio
-
-        p = pyaudio.PyAudio()
-        stream = None
+    def _start_capture(self):
+        """Start non-blocking callback capture with a silent keepalive feeder."""
         try:
-            wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
-            default_speakers = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
-            
-            # Find loopback endpoint for default output
+            import pyaudiowpatch as pyaudio
+
+            if self._pa is None:
+                self._pa = pyaudio.PyAudio()
+
+            wasapi_info = self._pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+            default_speakers = self._pa.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+
             loopback_dev = None
             if default_speakers.get("isLoopbackDevice"):
                 loopback_dev = default_speakers
             else:
-                for lb in p.get_loopback_device_info_generator():
+                for lb in self._pa.get_loopback_device_info_generator():
                     if default_speakers["name"] in lb["name"]:
                         loopback_dev = lb
                         break
                 if not loopback_dev:
-                    loopback_dev = p.get_default_wasapi_loopback()
+                    loopback_dev = self._pa.get_default_wasapi_loopback()
 
             self._device_info = loopback_dev
             self.channels = int(loopback_dev.get("maxInputChannels", 2))
             self.sample_rate = int(loopback_dev.get("defaultSampleRate", 48000))
             frames_per_buffer = int(self.sample_rate * (self.chunk_ms / 1000.0))
 
-            logger.info(f"Opening loopback stream on '{loopback_dev['name']}': {self.sample_rate}Hz, {self.channels}ch")
+            logger.info(f"Starting WASAPI loopback on '{loopback_dev['name']}': {self.sample_rate}Hz, {self.channels}ch")
 
-            stream = p.open(
+            # 1. Output keepalive stream: generates digital silence so WASAPI engine stays active even when PC is quiet
+            def _out_callback(in_data, frame_count, time_info, status):
+                silence = b'\x00' * (frame_count * self.channels * 2)
+                return (silence, pyaudio.paContinue)
+
+            out_dev_index = wasapi_info["defaultOutputDevice"]
+            self._out_stream = self._pa.open(
+                format=pyaudio.paInt16,
+                channels=self.channels,
+                rate=self.sample_rate,
+                output=True,
+                output_device_index=out_dev_index,
+                stream_callback=_out_callback
+            )
+
+            # 2. Input loopback stream: non-blocking callback that receives mixed system audio
+            def _in_callback(in_data, frame_count, time_info, status):
+                if in_data:
+                    with self._lock:
+                        subscribers = list(self._subscribers)
+                        loop = self._loop
+
+                    if subscribers and loop and not loop.is_closed():
+                        for sub_q in subscribers:
+                            try:
+                                if sub_q.full():
+                                    try:
+                                        sub_q.get_nowait()
+                                    except asyncio.QueueEmpty:
+                                        pass
+                                loop.call_soon_threadsafe(sub_q.put_nowait, in_data)
+                            except Exception:
+                                pass
+                return (None, pyaudio.paContinue)
+
+            self._in_stream = self._pa.open(
                 format=pyaudio.paInt16,
                 channels=self.channels,
                 rate=self.sample_rate,
                 input=True,
                 input_device_index=loopback_dev["index"],
-                frames_per_buffer=frames_per_buffer
+                frames_per_buffer=frames_per_buffer,
+                stream_callback=_in_callback
             )
 
-            while not self._stop_event.is_set():
-                try:
-                    data = stream.read(frames_per_buffer, exception_on_overflow=False)
-                except Exception as e:
-                    logger.debug(f"Audio read warning: {e}")
-                    continue
-
-                if not data:
-                    continue
-
-                with self._lock:
-                    subscribers = list(self._subscribers)
-                    loop = self._loop
-
-                if not subscribers or not loop or loop.is_closed():
-                    continue
-
-                # Broadcast data to all subscriber queues thread-safely
-                for sub_q in subscribers:
-                    try:
-                        if sub_q.full():
-                            try:
-                                sub_q.get_nowait()
-                            except asyncio.QueueEmpty:
-                                pass
-                        loop.call_soon_threadsafe(sub_q.put_nowait, data)
-                    except Exception:
-                        pass
+            self._out_stream.start_stream()
+            self._in_stream.start_stream()
+            logger.info("Audio loopback and keepalive streams active")
 
         except Exception as e:
-            logger.error(f"Error in audio capture worker: {e}", exc_info=True)
-        finally:
-            if stream:
-                try:
-                    stream.stop_stream()
-                    stream.close()
-                except Exception:
-                    pass
+            logger.error(f"Failed to start audio loopback: {e}", exc_info=True)
+            self._stop_capture()
+
+    def _stop_capture(self):
+        """Stop streams and release PortAudio resources."""
+        if self._in_stream:
             try:
-                p.terminate()
+                self._in_stream.stop_stream()
+                self._in_stream.close()
             except Exception:
                 pass
-            logger.info("Audio loopback capture thread exited")
+            self._in_stream = None
+
+        if self._out_stream:
+            try:
+                self._out_stream.stop_stream()
+                self._out_stream.close()
+            except Exception:
+                pass
+            self._out_stream = None
+
+        if self._pa:
+            try:
+                self._pa.terminate()
+            except Exception:
+                pass
+            self._pa = None
+
+        logger.info("Audio loopback streams stopped and resources freed")
 
 audio_manager = AudioLoopbackManager()
 
@@ -160,28 +182,17 @@ async def audio_stream_websocket(
     token: Optional[str] = Query(None)
 ):
     """Real-time binary PCM audio stream via WebSocket."""
-    # Authenticate token from query param or headers
-    auth_token = token
-    if not auth_token:
-        auth_header = websocket.headers.get("authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            auth_token = auth_header.replace("Bearer ", "").strip()
-
-    if not auth_token:
-        await websocket.close(code=4001, reason="Authentication required")
-        return
-
-    device_id = decode_access_token(auth_token)
-    if not device_id or not device_vault.is_paired(device_id):
-        await websocket.close(code=4003, reason="Unauthorized device")
+    device = await get_websocket_device(websocket, token)
+    if not device:
+        await websocket.close(code=4001, reason="Unauthorized or revoked device")
         return
 
     await websocket.accept()
     loop = asyncio.get_running_loop()
     queue = audio_manager.subscribe(loop)
+    logger.info(f"Audio WebSocket connected from device {device.device_name} ({device.device_id})")
 
     try:
-        # Send initial audio configuration payload
         init_payload = {
             "type": "init",
             "sampleRate": audio_manager.sample_rate,
@@ -201,3 +212,4 @@ async def audio_stream_websocket(
         logger.debug(f"Audio WebSocket stream closed: {e}")
     finally:
         audio_manager.unsubscribe(queue)
+        logger.info(f"Audio WebSocket disconnected for {device.device_name}")

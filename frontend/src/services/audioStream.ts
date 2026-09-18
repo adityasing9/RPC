@@ -29,6 +29,7 @@ export class AudioStreamClient {
     }
 
     try {
+      // 1. Initialize and unlock AudioContext synchronously during user click
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       if (!this.audioCtx) {
         this.audioCtx = new AudioContextClass();
@@ -38,6 +39,18 @@ export class AudioStreamClient {
         await this.audioCtx.resume();
       }
 
+      // Play a 1-sample silent burst to completely unlock mobile Safari / Chrome audio pipeline
+      try {
+        const silentBuf = this.audioCtx.createBuffer(1, 1, 22050);
+        const silentSource = this.audioCtx.createBufferSource();
+        silentSource.buffer = silentBuf;
+        silentSource.connect(this.audioCtx.destination);
+        silentSource.start(0);
+      } catch (e) {
+        // ignore
+      }
+
+      // 2. Connect WebSocket
       const serverUrl = getDefaultServerUrl();
       const wsUrl = serverUrl.replace(/^http/, 'ws') + `/api/v1/audio/ws?token=${encodeURIComponent(token)}`;
 
@@ -59,40 +72,51 @@ export class AudioStreamClient {
               this.channels = meta.channels || 2;
             }
           } catch (err) {
-            // ignore non-json text
+            // ignore
           }
           return;
         }
 
-        if (event.data instanceof ArrayBuffer && this.audioCtx && this.audioCtx.state === 'running') {
+        if (event.data instanceof ArrayBuffer && this.audioCtx) {
           this.playPcmChunk(event.data);
         }
       };
 
       this.ws.onerror = () => {
-        this.stop('Connection error');
+        this.stop('Audio connection failed');
       };
 
       this.ws.onclose = () => {
         this.stop();
       };
     } catch (err: any) {
-      this.stop(err?.message || 'Audio initialization failed');
+      this.stop(err?.message || 'Audio playback init failed');
     }
   }
 
   private playPcmChunk(buffer: ArrayBuffer) {
     if (!this.audioCtx) return;
 
+    if (this.audioCtx.state === 'suspended') {
+      this.audioCtx.resume().catch(() => {});
+    }
+
     const int16 = new Int16Array(buffer);
-    const numChannels = this.channels;
+    const numChannels = this.channels || 2;
     const numFrames = int16.length / numChannels;
     if (numFrames <= 0) return;
 
-    const audioBuffer = this.audioCtx.createBuffer(numChannels, numFrames, this.sampleRate);
+    const targetChannels = Math.min(numChannels, 2);
+    let audioBuffer: AudioBuffer;
+    try {
+      audioBuffer = this.audioCtx.createBuffer(targetChannels, numFrames, this.sampleRate);
+    } catch (e) {
+      // Fallback to audio context native sample rate if browser restricts
+      audioBuffer = this.audioCtx.createBuffer(targetChannels, numFrames, this.audioCtx.sampleRate);
+    }
 
     // Deinterleave 16-bit PCM to Float32 [-1.0, 1.0]
-    for (let ch = 0; ch < numChannels; ch++) {
+    for (let ch = 0; ch < targetChannels; ch++) {
       const channelData = audioBuffer.getChannelData(ch);
       for (let i = 0; i < numFrames; i++) {
         channelData[i] = int16[i * numChannels + ch] / 32768.0;
@@ -104,9 +128,9 @@ export class AudioStreamClient {
     source.connect(this.audioCtx.destination);
 
     const currentTime = this.audioCtx.currentTime;
-    // Keep playback in real-time sync with 30ms jitter safety window
-    if (this.nextPlayTime < currentTime || this.nextPlayTime > currentTime + 0.15) {
-      this.nextPlayTime = currentTime + 0.03;
+    // Jitter buffer: synchronize and smooth out network delivery
+    if (this.nextPlayTime < currentTime || this.nextPlayTime > currentTime + 0.20) {
+      this.nextPlayTime = currentTime + 0.04;
     }
 
     source.start(this.nextPlayTime);
