@@ -5,10 +5,19 @@ export type AudioStateChangeHandler = (active: boolean, error?: string) => void;
 export class AudioStreamClient {
   private ws: WebSocket | null = null;
   private audioCtx: AudioContext | null = null;
-  private sampleRate: number = 48000;
-  private channels: number = 2;
-  private nextPlayTime: number = 0;
-  private isRunning: boolean = false;
+  private processor: ScriptProcessorNode | null = null;
+
+  // Circular Ring Buffer Configuration (2 seconds of 48kHz Stereo)
+  private readonly RING_CAPACITY = 48000 * 2 * 2; // 192,000 samples
+  private ringBuffer = new Float32Array(this.RING_CAPACITY);
+  private writePtr = 0;
+  private readPtr = 0;
+  private availableSamples = 0;
+  private hasStartedPlayback = false;
+
+  public sampleRate = 48000;
+  public channels = 2;
+  private isRunning = false;
   private onStateChangeCallback?: AudioStateChangeHandler;
 
   constructor(onStateChange?: AudioStateChangeHandler) {
@@ -29,7 +38,7 @@ export class AudioStreamClient {
     }
 
     try {
-      // 1. Initialize AudioContext at 48kHz to match Windows native rate
+      // 1. Initialize AudioContext
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       if (!this.audioCtx || this.audioCtx.state === 'closed') {
         try {
@@ -43,21 +52,85 @@ export class AudioStreamClient {
         await this.audioCtx.resume();
       }
 
-      // Mobile Safari / Chrome unlock burst
+      // Reset Ring Buffer
+      this.ringBuffer.fill(0);
+      this.writePtr = 0;
+      this.readPtr = 0;
+      this.availableSamples = 0;
+      this.hasStartedPlayback = false;
+
+      // 2. Create Continuous Ring-Buffer Audio Processor (2048 buffer size = ~42ms)
+      const bufferSize = 2048;
+      this.processor = this.audioCtx.createScriptProcessor(bufferSize, 0, 2);
+
+      this.processor.onaudioprocess = (e: AudioProcessingEvent) => {
+        const left = e.outputBuffer.getChannelData(0);
+        const right = e.outputBuffer.getChannelData(1);
+        const frames = left.length;
+        const needed = frames * 2; // Stereo interleaved
+
+        // Pre-buffer 100ms (~9,600 samples) before initial playback to completely absorb Wi-Fi jitter
+        if (!this.hasStartedPlayback) {
+          if (this.availableSamples >= 4800 * 2) {
+            this.hasStartedPlayback = true;
+          } else {
+            left.fill(0);
+            right.fill(0);
+            return;
+          }
+        }
+
+        // Buffer Underrun Handling: If network packet was delayed, output smooth fade to silence
+        if (this.availableSamples < needed) {
+          for (let i = 0; i < frames; i++) {
+            if (this.availableSamples >= 2) {
+              left[i] = this.ringBuffer[this.readPtr];
+              this.readPtr = (this.readPtr + 1) % this.RING_CAPACITY;
+              right[i] = this.ringBuffer[this.readPtr];
+              this.readPtr = (this.readPtr + 1) % this.RING_CAPACITY;
+              this.availableSamples -= 2;
+            } else {
+              left[i] = 0;
+              right[i] = 0;
+            }
+          }
+          this.hasStartedPlayback = false; // Wait for brief refill before playing again
+          return;
+        }
+
+        // Seamless continuous linear sample playback:
+        for (let i = 0; i < frames; i++) {
+          left[i] = this.ringBuffer[this.readPtr];
+          this.readPtr = (this.readPtr + 1) % this.RING_CAPACITY;
+          right[i] = this.ringBuffer[this.readPtr];
+          this.readPtr = (this.readPtr + 1) % this.RING_CAPACITY;
+        }
+        this.availableSamples -= needed;
+
+        // Clock drift control: If buffer accumulates over 250ms due to device clock difference,
+        // smoothly advance read pointer to maintain sub-120ms real-time latency without stutter.
+        const maxBufferLead = 48000 * 2 * 0.25;
+        if (this.availableSamples > maxBufferLead) {
+          const excess = this.availableSamples - (48000 * 2 * 0.12);
+          this.readPtr = (this.readPtr + excess) % this.RING_CAPACITY;
+          this.availableSamples -= excess;
+        }
+      };
+
+      // Keep processor alive by connecting to destination
+      this.processor.connect(this.audioCtx.destination);
+
+      // Mobile Safari keepalive audio source
       try {
-        const silentBuf = this.audioCtx.createBuffer(1, 1, 22050);
-        const silentSource = this.audioCtx.createBufferSource();
-        silentSource.buffer = silentBuf;
-        silentSource.connect(this.audioCtx.destination);
-        silentSource.start(0);
+        const dummy = this.audioCtx.createBufferSource();
+        dummy.buffer = this.audioCtx.createBuffer(1, 1, 22050);
+        dummy.connect(this.audioCtx.destination);
+        dummy.start(0);
       } catch {
         // ignore
       }
 
-      // Reset playback timeline
-      this.nextPlayTime = 0;
-
-      // 2. Connect WebSocket
+      // 3. Connect WebSocket
       const serverUrl = getDefaultServerUrl();
       const wsUrl = serverUrl.replace(/^http/, 'ws') + `/api/v1/audio/ws?token=${encodeURIComponent(token)}`;
 
@@ -66,7 +139,6 @@ export class AudioStreamClient {
 
       this.ws.onopen = () => {
         this.isRunning = true;
-        this.nextPlayTime = 0;
         this.onStateChangeCallback?.(true);
       };
 
@@ -84,8 +156,8 @@ export class AudioStreamClient {
           return;
         }
 
-        if (event.data instanceof ArrayBuffer && this.audioCtx) {
-          this.playPcmChunk(event.data);
+        if (event.data instanceof ArrayBuffer) {
+          this.enqueuePcmChunk(event.data);
         }
       };
 
@@ -97,11 +169,11 @@ export class AudioStreamClient {
         this.stop();
       };
     } catch (err: any) {
-      this.stop(err?.message || 'Audio playback failed to initialize');
+      this.stop(err?.message || 'Audio initialization failed');
     }
   }
 
-  private playPcmChunk(buffer: ArrayBuffer) {
+  private enqueuePcmChunk(buffer: ArrayBuffer) {
     if (!this.audioCtx) return;
 
     if (this.audioCtx.state === 'suspended') {
@@ -109,44 +181,15 @@ export class AudioStreamClient {
     }
 
     const int16 = new Int16Array(buffer);
-    const numChannels = this.channels || 2;
-    const numFrames = int16.length / numChannels;
-    if (numFrames <= 0) return;
+    const numSamples = int16.length;
+    if (numSamples <= 0) return;
 
-    const targetChannels = Math.min(numChannels, 2);
-    let audioBuffer: AudioBuffer;
-    try {
-      audioBuffer = this.audioCtx.createBuffer(targetChannels, numFrames, this.sampleRate);
-    } catch {
-      audioBuffer = this.audioCtx.createBuffer(targetChannels, numFrames, this.audioCtx.sampleRate);
+    // Direct circular buffer write
+    for (let i = 0; i < numSamples; i++) {
+      this.ringBuffer[this.writePtr] = int16[i] / 32768.0;
+      this.writePtr = (this.writePtr + 1) % this.RING_CAPACITY;
     }
-
-    // Deinterleave 16-bit PCM to Float32 [-1.0, 1.0]
-    for (let ch = 0; ch < targetChannels; ch++) {
-      const channelData = audioBuffer.getChannelData(ch);
-      for (let i = 0; i < numFrames; i++) {
-        channelData[i] = int16[i * numChannels + ch] / 32768.0;
-      }
-    }
-
-    const source = this.audioCtx.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(this.audioCtx.destination);
-
-    const currentTime = this.audioCtx.currentTime;
-
-    // Smooth continuous audio timeline scheduling:
-    // If playback fell behind the clock (underrun), anchor with a 100ms cushion.
-    // Otherwise, seamlessly append chunk directly after the previous chunk (sample-perfect).
-    if (this.nextPlayTime < currentTime) {
-      this.nextPlayTime = currentTime + 0.10;
-    } else if (this.nextPlayTime > currentTime + 0.80) {
-      // If lag accumulated over 800ms, resync smoothly
-      this.nextPlayTime = currentTime + 0.10;
-    }
-
-    source.start(this.nextPlayTime);
-    this.nextPlayTime += audioBuffer.duration;
+    this.availableSamples += numSamples;
   }
 
   public stop(error?: string): void {
@@ -157,11 +200,17 @@ export class AudioStreamClient {
       this.ws.close();
       this.ws = null;
     }
+    if (this.processor) {
+      this.processor.disconnect();
+      this.processor.onaudioprocess = null;
+      this.processor = null;
+    }
     if (this.audioCtx && this.audioCtx.state !== 'closed') {
       this.audioCtx.suspend().catch(() => {});
     }
     this.isRunning = false;
-    this.nextPlayTime = 0;
+    this.hasStartedPlayback = false;
+    this.availableSamples = 0;
     this.onStateChangeCallback?.(false, error);
   }
 

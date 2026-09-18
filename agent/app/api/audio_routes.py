@@ -89,22 +89,6 @@ class AudioLoopbackManager:
 
             logger.info(f"Starting WASAPI loopback on '{loopback_dev['name']}': {self.sample_rate}Hz, {self.channels}ch")
 
-            # 1. Output keepalive stream: generates digital silence so WASAPI engine stays active even when PC is quiet
-            def _out_callback(in_data, frame_count, time_info, status):
-                silence = b'\x00' * (frame_count * self.channels * 2)
-                return (silence, pyaudio.paContinue)
-
-            out_dev_index = wasapi_info["defaultOutputDevice"]
-            self._out_stream = self._pa.open(
-                format=pyaudio.paInt16,
-                channels=self.channels,
-                rate=self.sample_rate,
-                output=True,
-                output_device_index=out_dev_index,
-                stream_callback=_out_callback
-            )
-
-            # 2. Input loopback stream: non-blocking callback that receives mixed system audio
             def _in_callback(in_data, frame_count, time_info, status):
                 if in_data:
                     with self._lock:
@@ -134,9 +118,8 @@ class AudioLoopbackManager:
                 stream_callback=_in_callback
             )
 
-            self._out_stream.start_stream()
             self._in_stream.start_stream()
-            logger.info("Audio loopback and keepalive streams active")
+            logger.info("Dedicated audio loopback capture active")
 
         except Exception as e:
             logger.error(f"Failed to start audio loopback: {e}", exc_info=True)
@@ -151,14 +134,6 @@ class AudioLoopbackManager:
             except Exception:
                 pass
             self._in_stream = None
-
-        if self._out_stream:
-            try:
-                self._out_stream.stop_stream()
-                self._out_stream.close()
-            except Exception:
-                pass
-            self._out_stream = None
 
         if self._pa:
             try:
