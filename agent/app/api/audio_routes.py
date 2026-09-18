@@ -2,9 +2,10 @@
 import asyncio
 import json
 import logging
+import re
 import threading
 from typing import Optional, Set
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.security import HTTPBearer
 from app.auth.dependencies import get_current_device, get_websocket_device
 from app.auth.vault import PairedDevice
@@ -297,10 +298,11 @@ def _inject_stereo_fmtp(sdp: str) -> str:
 
 class WebRTCSession:
     """Tracks active WebRTC peer connection and subscribed audio queue."""
-    def __init__(self, session_id: str, pc: RTCPeerConnection, queue: asyncio.Queue):
+    def __init__(self, session_id: str, pc: RTCPeerConnection, queue: asyncio.Queue, device_id: str = ""):
         self.session_id = session_id
         self.pc = pc
         self.queue = queue
+        self.device_id = device_id
         self.created_at = time.time()
 
 webrtc_sessions: Dict[str, WebRTCSession] = {}
@@ -353,9 +355,27 @@ class WebRTCLoopbackTrack(MediaStreamTrack):
 
 @router.post("/webrtc/request-offer")
 async def webrtc_request_offer(
+    request: Request,
     current_device: PairedDevice = Depends(get_current_device)
 ):
     """Server generates WebRTC Offer containing PC host LAN IP for direct UDP peer connection."""
+    now = time.time()
+    # 1. Clean up stale or failed sessions (>30s old)
+    for sid, s in list(webrtc_sessions.items()):
+        if s.pc.connectionState in ("failed", "closed", "disconnected") or (s.pc.connectionState == "connecting" and now - s.created_at > 30):
+            logger.info(f"Cleaning up stale WebRTC session {sid} (state={s.pc.connectionState})")
+            audio_manager.unsubscribe(s.queue)
+            asyncio.create_task(s.pc.close())
+            webrtc_sessions.pop(sid, None)
+
+    # 2. Terminate any previous session for this specific device
+    for sid, s in list(webrtc_sessions.items()):
+        if getattr(s, "device_id", "") == current_device.device_id:
+            logger.info(f"Terminating existing WebRTC session {sid} for device {current_device.device_name}")
+            audio_manager.unsubscribe(s.queue)
+            asyncio.create_task(s.pc.close())
+            webrtc_sessions.pop(sid, None)
+
     loop = asyncio.get_running_loop()
     queue = audio_manager.subscribe(loop)
 
@@ -364,12 +384,16 @@ async def webrtc_request_offer(
     pc.addTrack(track)
 
     session_id = str(uuid.uuid4())
-    session = WebRTCSession(session_id, pc, queue)
+    session = WebRTCSession(session_id, pc, queue, device_id=current_device.device_id)
     webrtc_sessions[session_id] = session
+
+    @pc.on("iceconnectionstatechange")
+    def on_iceconnectionstatechange():
+        logger.info(f"WebRTC audio session {session_id} iceConnectionState: {pc.iceConnectionState}")
 
     @pc.on("connectionstatechange")
     async def on_connectionstatechange():
-        logger.info(f"WebRTC audio session {session_id} state: {pc.connectionState}")
+        logger.info(f"WebRTC audio session {session_id} connectionState: {pc.connectionState}")
         if pc.connectionState in ["failed", "closed", "disconnected"]:
             audio_manager.unsubscribe(queue)
             await pc.close()
@@ -377,10 +401,21 @@ async def webrtc_request_offer(
 
     offer = await pc.createOffer()
     hifi_sdp = _inject_stereo_fmtp(offer.sdp)
+
+    # Determine PC host LAN IP reached by client
+    host_header = request.headers.get("host", "")
+    server_ip = host_header.split(":")[0] if host_header else None
+    if not server_ip or server_ip in ("localhost", "127.0.0.1", "0.0.0.0"):
+        server_ip = request.scope.get("server", [None])[0]
+
+    # Ensure connection line points to reachable IPv4
+    if server_ip and server_ip not in ("0.0.0.0", "127.0.0.1", "localhost"):
+        hifi_sdp = re.sub(r'c=IN IP[46] [^\r\n]+', f'c=IN IP4 {server_ip}', hifi_sdp)
+
     hifi_offer = RTCSessionDescription(sdp=hifi_sdp, type=offer.type)
     await pc.setLocalDescription(hifi_offer)
 
-    logger.info(f"Generated Hi-Fi WebRTC Offer (256kbps Stereo) for session {session_id} (Device: {current_device.device_name})")
+    logger.info(f"Generated Hi-Fi WebRTC Offer (256kbps Stereo) for session {session_id} (Device: {current_device.device_name}, Host IP: {server_ip})")
 
     return {
         "sessionId": session_id,
@@ -390,6 +425,7 @@ async def webrtc_request_offer(
 
 @router.post("/webrtc/answer")
 async def webrtc_audio_answer(
+    request: Request,
     payload: dict,
     current_device: PairedDevice = Depends(get_current_device)
 ):
@@ -404,6 +440,27 @@ async def webrtc_audio_answer(
         raise HTTPException(status_code=400, detail="Missing sdp")
 
     session = webrtc_sessions[session_id]
+    client_ip = request.client.host if request.client else None
+    logger.info(f"Received WebRTC Answer for session {session_id} from client IP: {client_ip}")
+
+    # Fix mDNS .local host candidates sent by Chromium / Brave
+    if client_ip and ".local" in sdp:
+        logger.info(f"Replacing mDNS .local in Answer SDP with actual client IP {client_ip}")
+        sdp = re.sub(
+            r'(\bcandidate:[^\r\n]*\s)[a-zA-Z0-9\.\-_]+\.local(\s\d+\styp\shost\b)',
+            rf'\g<1>{client_ip}\g<2>',
+            sdp
+        )
+
+    # In case the client had no candidates in Answer SDP, inject fallback host candidate
+    if client_ip and "a=candidate:" not in sdp:
+        port_match = re.search(r'm=audio\s+(\d+)', sdp)
+        if port_match:
+            port = port_match.group(1)
+            cand_line = f"a=candidate:1 1 udp 2122260223 {client_ip} {port} typ host\r\n"
+            sdp = re.sub(r'(m=audio[^\r\n]+\r?\n)', rf'\g<1>{cand_line}', sdp)
+            logger.info(f"Injected fallback host candidate {client_ip}:{port} into Answer SDP")
+
     await session.pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type=sdp_type))
     logger.info(f"WebRTC session {session_id} setRemoteDescription successfully applied")
 
@@ -412,6 +469,45 @@ async def webrtc_audio_answer(
         "sessionId": session_id,
         "connectionState": session.pc.connectionState
     }
+
+@router.post("/webrtc/candidate")
+async def webrtc_audio_candidate(
+    request: Request,
+    payload: dict,
+    current_device: PairedDevice = Depends(get_current_device)
+):
+    """Receive trickled ICE candidate from client."""
+    session_id = payload.get("sessionId")
+    candidate_dict = payload.get("candidate")
+    if not session_id or session_id not in webrtc_sessions:
+        return {"success": False, "message": "Session not found"}
+    if not candidate_dict or not candidate_dict.get("candidate"):
+        return {"success": True, "message": "Ignored"}
+
+    session = webrtc_sessions[session_id]
+    cand_str = candidate_dict.get("candidate", "").strip()
+    if not cand_str:
+        return {"success": True}
+
+    client_ip = request.client.host if request.client else None
+    if client_ip and ".local" in cand_str:
+        cand_str = re.sub(
+            r'(\bcandidate:[^\r\n]*\s)[a-zA-Z0-9\.\-_]+\.local(\s\d+\styp\shost\b)',
+            rf'\g<1>{client_ip}\g<2>',
+            cand_str
+        )
+
+    try:
+        from aiortc.sdp import candidate_from_sdp
+        candidate_obj = candidate_from_sdp(cand_str)
+        candidate_obj.sdpMid = candidate_dict.get("sdpMid")
+        candidate_obj.sdpMLineIndex = candidate_dict.get("sdpMLineIndex")
+        await session.pc.addIceCandidate(candidate_obj)
+        logger.debug(f"Trickle ICE candidate added for session {session_id}: {candidate_obj.ip}:{candidate_obj.port}")
+    except Exception as e:
+        logger.debug(f"Could not add trickle ICE candidate: {e}")
+
+    return {"success": True}
 
 @router.post("/webrtc/stop")
 async def webrtc_audio_stop(

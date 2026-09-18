@@ -404,6 +404,15 @@ class ApiService {
     }
   }
 
+  async sendWebRtcCandidate(sessionId: string, candidate: any): Promise<boolean> {
+    try {
+      const res = await this.client.post('/audio/webrtc/candidate', { sessionId, candidate });
+      return !!res.data?.success;
+    } catch {
+      return false;
+    }
+  }
+
   async sendWebRtcOffer(sdp: string, type: string = 'offer'): Promise<{ sessionId?: string; sdp: string; type: string } | null> {
     try {
       const res = await this.client.post('/audio/webrtc/offer', { sdp, type });

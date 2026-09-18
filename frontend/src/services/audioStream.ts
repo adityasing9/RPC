@@ -243,6 +243,8 @@ export class AudioStreamClient {
   }
 
   private async startWebRtcStream(): Promise<void> {
+    this.stopWebRtc();
+
     // 1. Request Server WebRTC Offer (contains PC local IP and port)
     const offerData = await api.requestWebRtcOffer();
     if (!offerData || !offerData.sdp) {
@@ -292,45 +294,22 @@ export class AudioStreamClient {
       this.onStateChangeCallback?.(true);
     };
 
-    // 3. Set remote description with server offer
-    await this.pc.setRemoteDescription(new RTCSessionDescription({
-      sdp: offerData.sdp,
-      type: offerData.type as RTCSdpType
-    }));
+    let answerSubmitted = false;
 
-    // 4. Create Answer and set directly without SDP mutations
-    const answer = await this.pc.createAnswer();
-    await this.pc.setLocalDescription(answer);
-
-    // 5. Gather candidates briefly (up to 400ms)
-    await new Promise<void>((resolve) => {
-      if (this.pc!.iceGatheringState === 'complete') {
-        resolve();
-      } else {
-        const onGather = () => {
-          if (this.pc!.iceGatheringState === 'complete') {
-            this.pc!.removeEventListener('icegatheringstatechange', onGather);
-            resolve();
-          }
-        };
-        this.pc!.addEventListener('icegatheringstatechange', onGather);
-        setTimeout(resolve, 400);
+    // Trickle ICE: forward any candidates that arrive after Answer submission
+    this.pc.onicecandidate = (event) => {
+      if (event.candidate && answerSubmitted && this.webrtcSessionId) {
+        api.sendWebRtcCandidate(this.webrtcSessionId, event.candidate.toJSON()).catch(() => {});
       }
-    });
+    };
 
-    // 6. Submit Answer to Server
-    const answerSuccess = await api.sendWebRtcAnswer(
-      this.webrtcSessionId,
-      this.pc.localDescription!.sdp,
-      this.pc.localDescription!.type
-    );
-
-    if (!answerSuccess) {
-      throw new Error('Failed to register WebRTC answer with PC agent');
-    }
+    this.pc.oniceconnectionstatechange = () => {
+      console.log('[WebRTC] ICE connection state:', this.pc?.iceConnectionState);
+    };
 
     this.pc.onconnectionstatechange = () => {
       const state = this.pc?.connectionState;
+      console.log('[WebRTC] Connection state:', state);
       if (state === 'connected') {
         this.isRunning = true;
         this.isPlaying = true;
@@ -343,6 +322,51 @@ export class AudioStreamClient {
         this.stop('WebRTC disconnected');
       }
     };
+
+    // 3. Set remote description with server offer
+    await this.pc.setRemoteDescription(new RTCSessionDescription({
+      sdp: offerData.sdp,
+      type: offerData.type as RTCSdpType
+    }));
+
+    // 4. Create Answer and set directly without SDP mutations
+    const answer = await this.pc.createAnswer();
+    await this.pc.setLocalDescription(answer);
+
+    // 5. Gather candidates with fast resolution
+    await new Promise<void>((resolve) => {
+      if (this.pc!.iceGatheringState === 'complete') {
+        resolve();
+        return;
+      }
+      let resolved = false;
+      const finish = () => {
+        if (!resolved) {
+          resolved = true;
+          this.pc?.removeEventListener('icegatheringstatechange', checkGather);
+          resolve();
+        }
+      };
+      const checkGather = () => {
+        if (this.pc?.iceGatheringState === 'complete') {
+          finish();
+        }
+      };
+      this.pc!.addEventListener('icegatheringstatechange', checkGather);
+      setTimeout(finish, 600);
+    });
+
+    // 6. Submit Answer to Server
+    answerSubmitted = true;
+    const answerSuccess = await api.sendWebRtcAnswer(
+      this.webrtcSessionId,
+      this.pc.localDescription!.sdp,
+      this.pc.localDescription!.type
+    );
+
+    if (!answerSuccess) {
+      throw new Error('Failed to register WebRTC answer with PC agent');
+    }
   }
 
   private async startWebSocketStream(token: string): Promise<void> {
