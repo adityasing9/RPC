@@ -6,15 +6,28 @@
   * {
     -webkit-tap-highlight-color: transparent;
   }
-  
+
+  html {
+    scroll-behavior: smooth;
+  }
+
   body {
     background-color: #090d16;
     color: #f1f5f9;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    overscroll-behavior-y: none;
+  }
+
+  /* Eliminate 300ms mobile tap delay across all interactive elements */
+  button, a, input, select, textarea {
+    touch-action: manipulation;
   }
 }
 
-/* Custom scrollbar for technical sleek appearance */
+/* Custom scrollbar for sleek technical styling */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -33,7 +46,29 @@
   background: #06b6d4;
 }
 
-/* Touch area preventing pull-to-refresh on mobile touchpad */
+/* Touchpad direct touch surface */
 .touchpad-surface {
   touch-action: none;
+}
+
+/* Safe Area Inset Support for Modern Mobile Browsers */
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom, 0.5rem));
+}
+
+/* Hardware-accelerated fluid tab transitions */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.16s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: opacity, transform;
 }

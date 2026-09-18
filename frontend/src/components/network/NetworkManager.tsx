@@ -5,17 +5,36 @@ import type { NetworkInterface, HotspotStatus } from '../../types';
 import { ConfirmModal } from '../common/ConfirmModal';
 
 export const NetworkManager: React.FC = () => {
-  const [interfaces, setInterfaces] = useState<NetworkInterface[]>([]);
-  const [hotspot, setHotspot] = useState<HotspotStatus | null>(null);
+  const [interfaces, setInterfaces] = useState<NetworkInterface[]>(() => {
+    try {
+      const cached = localStorage.getItem('rcpc_cached_interfaces');
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [hotspot, setHotspot] = useState<HotspotStatus | null>(() => {
+    try {
+      const cached = localStorage.getItem('rcpc_cached_hotspot');
+      return cached ? JSON.parse(cached) : null;
+    } catch {
+      return null;
+    }
+  });
   const [loading, setLoading] = useState<boolean>(false);
   const [toggleWarningModal, setToggleWarningModal] = useState<boolean>(false);
 
   useEffect(() => {
     loadNetworkData();
+    // Silent background poll every 12 seconds to keep status live
+    const timer = setInterval(() => {
+      loadNetworkData(true);
+    }, 12000);
+    return () => clearInterval(timer);
   }, []);
 
-  const loadNetworkData = async () => {
-    setLoading(true);
+  const loadNetworkData = async (silent: boolean = false) => {
+    if (!silent) setLoading(true);
     try {
       const [ifaces, hs] = await Promise.all([
         api.getInterfaces(),
@@ -23,10 +42,12 @@ export const NetworkManager: React.FC = () => {
       ]);
       setInterfaces(ifaces);
       setHotspot(hs);
+      localStorage.setItem('rcpc_cached_interfaces', JSON.stringify(ifaces));
+      localStorage.setItem('rcpc_cached_hotspot', JSON.stringify(hs));
     } catch (e) {
       console.error('Failed to load network data', e);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -136,7 +157,7 @@ export const NetworkManager: React.FC = () => {
             Network Adapters & IP Addresses
           </h3>
           <button
-            onClick={loadNetworkData}
+            onClick={() => loadNetworkData(false)}
             className="p-1.5 rounded-lg text-slate-400 hover:text-white"
             title="Refresh"
           >

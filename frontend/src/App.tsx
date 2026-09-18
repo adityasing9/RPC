@@ -21,41 +21,6 @@ import { AlertCircle, X } from 'lucide-react';
 const MainContent: React.FC = () => {
   const { activeTab, notifications, dismissNotification } = useApp();
 
-  const renderTab = () => {
-    switch (activeTab) {
-      case 'dashboard':
-        return (
-          <div className="space-y-6">
-            <ConnectionCard />
-            <SystemMetrics />
-            <QuickControls />
-            <ClipboardSync />
-          </div>
-        );
-      case 'control':
-        return (
-          <div className="space-y-6">
-            <QuickControls />
-            <MediaPad />
-            <ScreenshotViewer />
-            <ClipboardSync />
-          </div>
-        );
-      case 'input':
-        return <Touchpad />;
-      case 'network':
-        return <NetworkManager />;
-      case 'files':
-        return <FileManager />;
-      case 'apps':
-        return <AppManager />;
-      case 'activity':
-        return <ActivityLog />;
-      default:
-        return null;
-    }
-  };
-
   return (
     <div className="flex-1 flex flex-col min-h-screen bg-dark-950 pb-20 md:pb-6">
       <Header />
@@ -83,8 +48,38 @@ const MainContent: React.FC = () => {
         </div>
       )}
 
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6">
-        {renderTab()}
+      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 relative">
+        <div className={activeTab === 'network' ? 'block animate-fadeIn' : 'hidden'}>
+          <NetworkManager />
+        </div>
+        <div className={activeTab === 'dashboard' ? 'block animate-fadeIn' : 'hidden'}>
+          <div className="space-y-6">
+            <ConnectionCard />
+            <SystemMetrics />
+            <QuickControls />
+            <ClipboardSync />
+          </div>
+        </div>
+        <div className={activeTab === 'control' ? 'block animate-fadeIn' : 'hidden'}>
+          <div className="space-y-6">
+            <QuickControls />
+            <MediaPad />
+            <ScreenshotViewer />
+            <ClipboardSync />
+          </div>
+        </div>
+        <div className={activeTab === 'input' ? 'block animate-fadeIn' : 'hidden'}>
+          {activeTab === 'input' && <Touchpad />}
+        </div>
+        <div className={activeTab === 'files' ? 'block animate-fadeIn' : 'hidden'}>
+          <FileManager />
+        </div>
+        <div className={activeTab === 'apps' ? 'block animate-fadeIn' : 'hidden'}>
+          <AppManager />
+        </div>
+        <div className={activeTab === 'activity' ? 'block animate-fadeIn' : 'hidden'}>
+          <ActivityLog />
+        </div>
       </main>
 
       <BottomNav />

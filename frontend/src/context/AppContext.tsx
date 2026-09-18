@@ -43,8 +43,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [telemetry, setTelemetry] = useState<TelemetryData | null>(null);
   const [transportState, setTransportState] = useState<TransportState>(transportManager.getState());
-  const [activeTab, setActiveTab] = useState<string>('dashboard');
+  const [activeTab, setActiveTabState] = useState<string>(() => {
+    return localStorage.getItem('rcpc_active_tab') || 'network';
+  });
   const [isPairingModalOpen, setIsPairingModalOpen] = useState<boolean>(false);
+
+  const setActiveTab = useCallback((tab: string) => {
+    setActiveTabState(tab);
+    localStorage.setItem('rcpc_active_tab', tab);
+  }, []);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
   const [notifications, setNotifications] = useState<string[]>([]);
 
