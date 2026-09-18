@@ -6,6 +6,9 @@ export class AudioStreamClient {
   private ws: WebSocket | null = null;
   private audioCtx: AudioContext | null = null;
   private processor: ScriptProcessorNode | null = null;
+  private gainNode: GainNode | null = null;
+  private analyserNode: AnalyserNode | null = null;
+  private wakeLock: any = null;
 
   // Circular Ring Buffer Configuration (2 seconds of 48kHz Stereo)
   private readonly RING_CAPACITY = 48000 * 2 * 2; // 192,000 samples
@@ -15,8 +18,12 @@ export class AudioStreamClient {
   private availableSamples = 0;
   private hasStartedPlayback = false;
 
+  // Audio & DSP Configuration
   public sampleRate = 48000;
   public channels = 2;
+  private volume = 1.0;
+  private isPhoneMutedState = false;
+  private latencyPreset: 'movie' | 'music' = 'movie';
   private isRunning = false;
   private onStateChangeCallback?: AudioStateChangeHandler;
 
@@ -26,6 +33,46 @@ export class AudioStreamClient {
 
   public isActive(): boolean {
     return this.isRunning;
+  }
+
+  public getVolume(): number {
+    return this.volume;
+  }
+
+  public setVolume(vol: number): void {
+    this.volume = Math.max(0, Math.min(1.5, vol));
+    if (this.gainNode) {
+      this.gainNode.gain.value = this.isPhoneMutedState ? 0 : this.volume;
+    }
+  }
+
+  public isMuted(): boolean {
+    return this.isPhoneMutedState;
+  }
+
+  public toggleMute(): boolean {
+    this.isPhoneMutedState = !this.isPhoneMutedState;
+    if (this.gainNode) {
+      this.gainNode.gain.value = this.isPhoneMutedState ? 0 : this.volume;
+    }
+    return this.isPhoneMutedState;
+  }
+
+  public getLatencyPreset(): 'movie' | 'music' {
+    return this.latencyPreset;
+  }
+
+  public setLatencyPreset(mode: 'movie' | 'music'): void {
+    this.latencyPreset = mode;
+    this.hasStartedPlayback = false;
+  }
+
+  public getFrequencyData(array: Uint8Array): void {
+    if (this.analyserNode && this.isRunning) {
+      this.analyserNode.getByteFrequencyData(array as any);
+    } else {
+      array.fill(0);
+    }
   }
 
   public async start(): Promise<void> {
@@ -52,6 +99,15 @@ export class AudioStreamClient {
         await this.audioCtx.resume();
       }
 
+      // 2. Request Screen WakeLock so mobile phone doesn't sleep while acting as wireless speaker
+      if ('wakeLock' in navigator) {
+        try {
+          this.wakeLock = await (navigator as any).wakeLock.request('screen');
+        } catch {
+          // ignore if denied or unsupported
+        }
+      }
+
       // Reset Ring Buffer
       this.ringBuffer.fill(0);
       this.writePtr = 0;
@@ -59,9 +115,16 @@ export class AudioStreamClient {
       this.availableSamples = 0;
       this.hasStartedPlayback = false;
 
-      // 2. Create Continuous Ring-Buffer Audio Processor (2048 buffer size = ~42ms)
+      // 3. Create DSP Chain: Processor -> GainNode -> AnalyserNode -> Destination
       const bufferSize = 2048;
       this.processor = this.audioCtx.createScriptProcessor(bufferSize, 0, 2);
+
+      this.gainNode = this.audioCtx.createGain();
+      this.gainNode.gain.value = this.isPhoneMutedState ? 0 : this.volume;
+
+      this.analyserNode = this.audioCtx.createAnalyser();
+      this.analyserNode.fftSize = 64;
+      this.analyserNode.smoothingTimeConstant = 0.8;
 
       this.processor.onaudioprocess = (e: AudioProcessingEvent) => {
         const left = e.outputBuffer.getChannelData(0);
@@ -69,9 +132,13 @@ export class AudioStreamClient {
         const frames = left.length;
         const needed = frames * 2; // Stereo interleaved
 
-        // Pre-buffer 100ms (~9,600 samples) before initial playback to completely absorb Wi-Fi jitter
+        // Pre-buffer threshold based on latency preset
+        // Movie: ~70ms buffer (3,360 stereo frames = 6,720 samples)
+        // Music: ~140ms buffer (6,720 stereo frames = 13,440 samples)
+        const prebufferSamples = this.latencyPreset === 'movie' ? 48000 * 0.07 * 2 : 48000 * 0.14 * 2;
+
         if (!this.hasStartedPlayback) {
-          if (this.availableSamples >= 4800 * 2) {
+          if (this.availableSamples >= prebufferSamples) {
             this.hasStartedPlayback = true;
           } else {
             left.fill(0);
@@ -80,7 +147,7 @@ export class AudioStreamClient {
           }
         }
 
-        // Buffer Underrun Handling: If network packet was delayed, output smooth fade to silence
+        // Buffer Underrun Handling: If network packet was delayed, output smooth silence
         if (this.availableSamples < needed) {
           for (let i = 0; i < frames; i++) {
             if (this.availableSamples >= 2) {
@@ -107,18 +174,21 @@ export class AudioStreamClient {
         }
         this.availableSamples -= needed;
 
-        // Clock drift control: If buffer accumulates over 250ms due to device clock difference,
-        // smoothly advance read pointer to maintain sub-120ms real-time latency without stutter.
-        const maxBufferLead = 48000 * 2 * 0.25;
+        // Clock drift control: Keep playback tightly synchronized in real time
+        const maxBufferLead = this.latencyPreset === 'movie' ? 48000 * 2 * 0.18 : 48000 * 2 * 0.30;
+        const targetLead = this.latencyPreset === 'movie' ? 48000 * 2 * 0.07 : 48000 * 2 * 0.14;
+
         if (this.availableSamples > maxBufferLead) {
-          const excess = this.availableSamples - (48000 * 2 * 0.12);
+          const excess = this.availableSamples - targetLead;
           this.readPtr = (this.readPtr + excess) % this.RING_CAPACITY;
           this.availableSamples -= excess;
         }
       };
 
-      // Keep processor alive by connecting to destination
-      this.processor.connect(this.audioCtx.destination);
+      // Connect DSP chain
+      this.processor.connect(this.gainNode);
+      this.gainNode.connect(this.analyserNode);
+      this.analyserNode.connect(this.audioCtx.destination);
 
       // Mobile Safari keepalive audio source
       try {
@@ -130,7 +200,7 @@ export class AudioStreamClient {
         // ignore
       }
 
-      // 3. Connect WebSocket
+      // 4. Connect WebSocket
       const serverUrl = getDefaultServerUrl();
       const wsUrl = serverUrl.replace(/^http/, 'ws') + `/api/v1/audio/ws?token=${encodeURIComponent(token)}`;
 
@@ -205,6 +275,22 @@ export class AudioStreamClient {
       this.processor.onaudioprocess = null;
       this.processor = null;
     }
+    if (this.gainNode) {
+      this.gainNode.disconnect();
+      this.gainNode = null;
+    }
+    if (this.analyserNode) {
+      this.analyserNode.disconnect();
+      this.analyserNode = null;
+    }
+    if (this.wakeLock) {
+      try {
+        this.wakeLock.release();
+      } catch {
+        // ignore
+      }
+      this.wakeLock = null;
+    }
     if (this.audioCtx && this.audioCtx.state !== 'closed') {
       this.audioCtx.suspend().catch(() => {});
     }
@@ -222,3 +308,6 @@ export class AudioStreamClient {
     }
   }
 }
+
+// Global shared singleton so WirelessSpeaker and Touchpad can share the audio client if needed
+export const sharedAudioClient = new AudioStreamClient();

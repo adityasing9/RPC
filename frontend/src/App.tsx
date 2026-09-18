@@ -16,6 +16,7 @@ import { AppManager } from './components/apps/AppManager';
 import { ActivityLog } from './components/activity/ActivityLog';
 import { PairingModal } from './components/pairing/PairingModal';
 import { SettingsModal } from './components/settings/SettingsModal';
+import { WirelessSpeaker } from './components/audio/WirelessSpeaker';
 import { AlertCircle, X } from 'lucide-react';
 
 const MainContent: React.FC = () => {
@@ -62,6 +63,7 @@ const MainContent: React.FC = () => {
         </div>
         <div className={activeTab === 'control' ? 'block animate-fadeIn' : 'hidden'}>
           <div className="space-y-6">
+            <WirelessSpeaker />
             <QuickControls />
             <MediaPad />
             <ScreenshotViewer />

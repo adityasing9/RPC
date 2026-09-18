@@ -3,6 +3,7 @@ import { Radio, Users, RefreshCw, AlertTriangle } from 'lucide-react';
 import { api } from '../../services/api';
 import type { NetworkInterface, HotspotStatus } from '../../types';
 import { ConfirmModal } from '../common/ConfirmModal';
+import { WirelessSpeaker } from '../audio/WirelessSpeaker';
 
 export const NetworkManager: React.FC = () => {
   const [interfaces, setInterfaces] = useState<NetworkInterface[]>(() => {
@@ -149,6 +150,9 @@ export const NetworkManager: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Wireless Laptop Speaker Card */}
+      <WirelessSpeaker />
 
       {/* Network Adapters List */}
       <div className="rounded-3xl bg-dark-900 border border-dark-800 p-5">
