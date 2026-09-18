@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Camera, RefreshCw, Maximize2, X, Download, Play, Pause, Radio, MousePointer, Monitor } from 'lucide-react';
+import { Camera, RefreshCw, Maximize2, X, Download, Play, Pause, Radio, MousePointer, Monitor, ExternalLink } from 'lucide-react';
 import { api } from '../../services/api';
+import { useApp } from '../../context/AppContext';
 
 interface ClickRipple {
   id: number;
@@ -10,6 +11,7 @@ interface ClickRipple {
 }
 
 export const ScreenshotViewer: React.FC = () => {
+  const { setActiveTab } = useApp();
   // Mode: 'live' or 'snapshot'
   const [mode, setMode] = useState<'live' | 'snapshot'>('live');
   
@@ -141,30 +143,42 @@ export const ScreenshotViewer: React.FC = () => {
           </p>
         </div>
 
-        {/* Mode Switcher Pills */}
-        <div className="flex items-center gap-1.5 bg-dark-950/80 p-1 rounded-2xl border border-dark-800 self-start sm:self-auto">
+        {/* Mode Switcher Pills & Link */}
+        <div className="flex flex-wrap items-center gap-1.5 self-start sm:self-auto">
           <button
-            onClick={() => setMode('live')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
-              mode === 'live'
-                ? 'bg-brand-primary text-dark-950 shadow-md shadow-brand-primary/20'
-                : 'text-slate-400 hover:text-white'
-            }`}
+            onClick={() => setActiveTab('input')}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-brand-primary/15 hover:bg-brand-primary/25 border border-brand-primary/40 text-brand-primary transition-all"
+            title="Open Live Screen and Touch Controls together in the same window"
           >
-            <Radio className="w-3.5 h-3.5" />
-            Live Stream
+            <Monitor className="w-3.5 h-3.5" />
+            <span>Screen + Touchpad</span>
+            <ExternalLink className="w-3 h-3 opacity-70" />
           </button>
-          <button
-            onClick={() => setMode('snapshot')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
-              mode === 'snapshot'
-                ? 'bg-brand-primary text-dark-950 shadow-md shadow-brand-primary/20'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            <Camera className="w-3.5 h-3.5" />
-            Snapshot
-          </button>
+
+          <div className="flex items-center gap-1 bg-dark-950/80 p-1 rounded-2xl border border-dark-800">
+            <button
+              onClick={() => setMode('live')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+                mode === 'live'
+                  ? 'bg-brand-primary text-dark-950 shadow-md shadow-brand-primary/20'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Radio className="w-3.5 h-3.5" />
+              Live Stream
+            </button>
+            <button
+              onClick={() => setMode('snapshot')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+                mode === 'snapshot'
+                  ? 'bg-brand-primary text-dark-950 shadow-md shadow-brand-primary/20'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Camera className="w-3.5 h-3.5" />
+              Snapshot
+            </button>
+          </div>
         </div>
       </div>
 

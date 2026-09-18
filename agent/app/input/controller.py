@@ -94,6 +94,19 @@ def mouse_click(button: str = "left", action: str = "click"):
         time.sleep(0.01)
         user32.mouse_event(up_flag, 0, 0, 0, 0)
 
+def click_mouse_at_percent(x_percent: float, y_percent: float, button: str = "left", action: str = "click"):
+    """Move cursor to relative percent coordinate on screen and trigger click."""
+    if not sys.platform.startswith("win"):
+        return
+    import ctypes
+    user32 = ctypes.windll.user32
+    w = user32.GetSystemMetrics(0)
+    h = user32.GetSystemMetrics(1)
+    target_x = int(max(0.0, min(x_percent, 1.0)) * w)
+    target_y = int(max(0.0, min(y_percent, 1.0)) * h)
+    user32.SetCursorPos(target_x, target_y)
+    mouse_click(button, action)
+
 def mouse_scroll(delta: int):
     """Scroll mouse wheel vertically."""
     if not sys.platform.startswith("win"):

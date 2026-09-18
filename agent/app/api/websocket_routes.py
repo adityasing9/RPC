@@ -11,6 +11,7 @@ from app.config import settings
 from app.input.controller import (
     move_mouse_relative,
     mouse_click,
+    click_mouse_at_percent,
     mouse_scroll,
     send_text,
     send_special_key
@@ -88,6 +89,12 @@ async def websocket_telemetry_endpoint(
                     btn = msg.get("button", "left")
                     act = msg.get("action", "click")
                     mouse_click(btn, act)
+                elif msg_type == "input.mouse.click_percent":
+                    x_pct = float(msg.get("x_percent", 0.5))
+                    y_pct = float(msg.get("y_percent", 0.5))
+                    btn = msg.get("button", "left")
+                    act = msg.get("action", "click")
+                    click_mouse_at_percent(x_pct, y_pct, btn, act)
                 elif msg_type == "input.mouse.scroll":
                     delta = int(msg.get("delta", 0))
                     mouse_scroll(delta)

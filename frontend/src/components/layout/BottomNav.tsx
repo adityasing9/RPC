@@ -2,7 +2,7 @@ import React from 'react';
 import {
   LayoutDashboard,
   Sliders,
-  MousePointer,
+  Monitor,
   Network,
   FolderOpen,
   Layers,
@@ -16,7 +16,7 @@ export const BottomNav: React.FC = () => {
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'control', label: 'Control', icon: Sliders },
-    { id: 'input', label: 'Input', icon: MousePointer },
+    { id: 'input', label: 'Remote', icon: Monitor },
     { id: 'network', label: 'Network', icon: Network },
     { id: 'files', label: 'Files', icon: FolderOpen },
     { id: 'apps', label: 'Apps', icon: Layers },

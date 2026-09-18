@@ -2,7 +2,7 @@ import React from 'react';
 import {
   LayoutDashboard,
   Sliders,
-  MousePointer,
+  Monitor,
   Network,
   FolderOpen,
   Layers,
@@ -18,7 +18,7 @@ export const Sidebar: React.FC = () => {
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'control', label: 'Control & Media', icon: Sliders },
-    { id: 'input', label: 'Touchpad & Keys', icon: MousePointer },
+    { id: 'input', label: 'Remote Desktop', icon: Monitor },
     { id: 'network', label: 'Network & Hotspot', icon: Network },
     { id: 'files', label: 'Sandboxed Files', icon: FolderOpen },
     { id: 'apps', label: 'Applications', icon: Layers },
