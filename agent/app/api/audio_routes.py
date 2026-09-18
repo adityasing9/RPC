@@ -232,3 +232,74 @@ async def open_bluetooth_settings(current_device: PairedDevice = Depends(get_cur
     except Exception as e:
         logger.error(f"Failed to open Bluetooth settings: {e}")
         return {"success": False, "error": str(e)}
+
+import fractions
+import numpy as np
+import av
+from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
+
+class WebRTCLoopbackTrack(MediaStreamTrack):
+    """High-performance real-time Opus audio track for WebRTC streaming."""
+    kind = "audio"
+
+    def __init__(self, queue: asyncio.Queue, sample_rate: int = 48000, channels: int = 2):
+        super().__init__()
+        self.queue = queue
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self._pts = 0
+        self._time_base = fractions.Fraction(1, sample_rate)
+
+    async def recv(self):
+        try:
+            chunk = await asyncio.wait_for(self.queue.get(), timeout=0.040)
+            arr = np.frombuffer(chunk, dtype=np.int16).reshape(1, -1)
+            frame = av.AudioFrame.from_ndarray(arr, format='s16', layout='stereo')
+            frame.sample_rate = self.sample_rate
+            frame.pts = self._pts
+            self._pts += frame.samples
+            frame.time_base = self._time_base
+            return frame
+        except Exception:
+            frames = 960
+            arr = np.zeros((1, frames * self.channels), dtype=np.int16)
+            frame = av.AudioFrame.from_ndarray(arr, format='s16', layout='stereo')
+            frame.sample_rate = self.sample_rate
+            frame.pts = self._pts
+            self._pts += frames
+            frame.time_base = self._time_base
+            return frame
+
+@router.post("/webrtc/offer")
+async def webrtc_audio_offer(
+    payload: dict,
+    current_device: PairedDevice = Depends(get_current_device)
+):
+    """Establish a peer-to-peer WebRTC Opus audio stream for wireless PC speaker."""
+    sdp = payload.get("sdp")
+    sdp_type = payload.get("type", "offer")
+    if not sdp:
+        raise HTTPException(status_code=400, detail="Missing sdp")
+
+    loop = asyncio.get_running_loop()
+    queue = audio_manager.subscribe(loop)
+
+    pc = RTCPeerConnection()
+    track = WebRTCLoopbackTrack(queue, sample_rate=audio_manager.sample_rate, channels=audio_manager.channels)
+    pc.addTrack(track)
+
+    @pc.on("connectionstatechange")
+    async def on_connectionstatechange():
+        logger.info(f"WebRTC audio state changed: {pc.connectionState}")
+        if pc.connectionState in ["failed", "closed", "disconnected"]:
+            audio_manager.unsubscribe(queue)
+            await pc.close()
+
+    await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type=sdp_type))
+    answer = await pc.createAnswer()
+    await pc.setLocalDescription(answer)
+
+    return {
+        "sdp": pc.localDescription.sdp,
+        "type": pc.localDescription.type
+    }

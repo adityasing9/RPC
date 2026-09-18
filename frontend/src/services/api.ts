@@ -373,6 +373,16 @@ class ApiService {
       return false;
     }
   }
+
+  // WebRTC Audio Streaming
+  async sendWebRtcOffer(sdp: string, type: string = 'offer'): Promise<{ sdp: string; type: string } | null> {
+    try {
+      const res = await this.client.post('/audio/webrtc/offer', { sdp, type });
+      return res.data;
+    } catch {
+      return null;
+    }
+  }
 }
 
 export const api = new ApiService();

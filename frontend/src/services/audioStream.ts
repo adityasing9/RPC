@@ -1,16 +1,21 @@
-import { getStoredToken, getDefaultServerUrl } from './api';
+import { getStoredToken, getDefaultServerUrl, api } from './api';
 
 export type AudioStateChangeHandler = (active: boolean, error?: string) => void;
 export type LatencyPreset = 'ultra' | 'movie' | 'music';
+export type StreamingEngine = 'webrtc' | 'websocket';
 
 export interface AudioStats {
   latencyMs: number;
   sampleRate: number;
   deviceSampleRate: number;
+  engine: StreamingEngine;
 }
 
 export class AudioStreamClient {
   private ws: WebSocket | null = null;
+  private pc: RTCPeerConnection | null = null;
+  private audioElement: HTMLAudioElement | null = null;
+  private mediaStreamSource: MediaStreamAudioSourceNode | null = null;
   private audioCtx: AudioContext | null = null;
   private processor: ScriptProcessorNode | null = null;
   private gainNode: GainNode | null = null;
@@ -18,6 +23,7 @@ export class AudioStreamClient {
   private keepAliveSource: AudioBufferSourceNode | null = null;
   private analyserNode: AnalyserNode | null = null;
   private wakeLock: any = null;
+  private streamingEngine: StreamingEngine = 'webrtc';
 
   // Ring Buffer: Interleaved Stereo Float32 Samples
   // 96,000 frames = 2 seconds of 48kHz Stereo (192,000 floats)
@@ -50,7 +56,8 @@ export class AudioStreamClient {
   private stats: AudioStats = {
     latencyMs: 75,
     sampleRate: 48000,
-    deviceSampleRate: 48000
+    deviceSampleRate: 48000,
+    engine: 'webrtc'
   };
 
   constructor(onStateChange?: AudioStateChangeHandler) {
@@ -93,10 +100,23 @@ export class AudioStreamClient {
     this.integralErr = 0;
   }
 
+  public getStreamingEngine(): StreamingEngine {
+    return this.streamingEngine;
+  }
+
+  public setStreamingEngine(eng: StreamingEngine): void {
+    this.streamingEngine = eng;
+    if (this.isRunning) {
+      this.stop();
+      this.start();
+    }
+  }
+
   public getStats(): AudioStats {
-    this.stats.latencyMs = Math.round((this.availableFrames / this.backendSampleRate) * 1000);
+    this.stats.latencyMs = this.streamingEngine === 'webrtc' ? 40 : Math.round((this.availableFrames / this.backendSampleRate) * 1000);
     this.stats.sampleRate = this.backendSampleRate;
     this.stats.deviceSampleRate = this.deviceSampleRate;
+    this.stats.engine = this.streamingEngine;
     return this.stats;
   }
 
@@ -120,6 +140,54 @@ export class AudioStreamClient {
     }
   }
 
+  private async initDspChain(): Promise<void> {
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (!this.audioCtx || this.audioCtx.state === 'closed') {
+      try {
+        this.audioCtx = new AudioContextClass({ sampleRate: 48000, latencyHint: 'interactive' });
+      } catch {
+        this.audioCtx = new AudioContextClass();
+      }
+    }
+
+    if (this.audioCtx.state === 'suspended') {
+      await this.audioCtx.resume();
+    }
+
+    this.deviceSampleRate = this.audioCtx.sampleRate || 48000;
+    this.nominalRatio = this.backendSampleRate / this.deviceSampleRate;
+    this.currentRatio = this.nominalRatio;
+
+    if (!this.gainNode) {
+      this.gainNode = this.audioCtx.createGain();
+      this.gainNode.gain.value = this.isPhoneMutedState ? 0 : this.volume;
+    }
+
+    if (!this.compressorNode) {
+      this.compressorNode = this.audioCtx.createDynamicsCompressor();
+      this.compressorNode.threshold.value = -1.0;
+      this.compressorNode.knee.value = 6.0;
+      this.compressorNode.ratio.value = 12.0;
+      this.compressorNode.attack.value = 0.003;
+      this.compressorNode.release.value = 0.12;
+    }
+
+    if (!this.analyserNode) {
+      this.analyserNode = this.audioCtx.createAnalyser();
+      this.analyserNode.fftSize = 64;
+      this.analyserNode.smoothingTimeConstant = 0.8;
+    }
+
+    // Connect DSP chain
+    this.gainNode.disconnect();
+    this.compressorNode.disconnect();
+    this.analyserNode.disconnect();
+
+    this.gainNode.connect(this.compressorNode);
+    this.compressorNode.connect(this.analyserNode);
+    this.analyserNode.connect(this.audioCtx.destination);
+  }
+
   public async start(): Promise<void> {
     if (this.isRunning) return;
 
@@ -130,228 +198,272 @@ export class AudioStreamClient {
     }
 
     try {
-      // 1. Initialize AudioContext
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      if (!this.audioCtx || this.audioCtx.state === 'closed') {
-        try {
-          this.audioCtx = new AudioContextClass({ sampleRate: 48000, latencyHint: 'interactive' });
-        } catch {
-          this.audioCtx = new AudioContextClass();
-        }
-      }
+      await this.initDspChain();
 
-      if (this.audioCtx.state === 'suspended') {
-        await this.audioCtx.resume();
-      }
-
-      this.deviceSampleRate = this.audioCtx.sampleRate || 48000;
-      this.nominalRatio = this.backendSampleRate / this.deviceSampleRate;
-      this.currentRatio = this.nominalRatio;
-
-      // 2. Request Screen WakeLock so mobile phone doesn't sleep
+      // Screen WakeLock
       if ('wakeLock' in navigator) {
         try {
           this.wakeLock = await (navigator as any).wakeLock.request('screen');
         } catch {
-          // ignore wakeLock error
+          // ignore
         }
       }
 
-      // Reset Buffer & DSP State
-      this.ringBuffer.fill(0);
-      this.writeFrameIdx = 0;
-      this.readFrameFloat = 0.0;
-      this.availableFrames = 0;
-      this.isPlaying = false;
-      this.integralErr = 0.0;
-      this.softGain = 0.0;
-
-      // 3. Audio Processing Pipeline: ScriptProcessor -> GainNode -> Compressor -> Analyser -> Destination
-      // 1024 frame buffer for swift responsiveness
-      const bufferSize = 1024;
-      this.processor = this.audioCtx.createScriptProcessor(bufferSize, 1, 2);
-
-      // Keep-alive silent driver so mobile browsers never deprioritize or sleep onaudioprocess
-      try {
-        const silentBuffer = this.audioCtx.createBuffer(1, 1024, this.deviceSampleRate);
-        this.keepAliveSource = this.audioCtx.createBufferSource();
-        this.keepAliveSource.buffer = silentBuffer;
-        this.keepAliveSource.loop = true;
-        this.keepAliveSource.connect(this.processor);
-        this.keepAliveSource.start();
-      } catch {
-        // ignore fallback
-      }
-
-      this.gainNode = this.audioCtx.createGain();
-      this.gainNode.gain.value = this.isPhoneMutedState ? 0 : this.volume;
-
-      // Studio Mastering Limiter: Prevents clipping distortion & enhances punch at all volume levels
-      this.compressorNode = this.audioCtx.createDynamicsCompressor();
-      this.compressorNode.threshold.value = -1.0;
-      this.compressorNode.knee.value = 6.0;
-      this.compressorNode.ratio.value = 12.0;
-      this.compressorNode.attack.value = 0.003;
-      this.compressorNode.release.value = 0.12;
-
-      this.analyserNode = this.audioCtx.createAnalyser();
-      this.analyserNode.fftSize = 64;
-      this.analyserNode.smoothingTimeConstant = 0.8;
-
-      this.processor.onaudioprocess = (e: AudioProcessingEvent) => {
-        const outLeft = e.outputBuffer.getChannelData(0);
-        const outRight = e.outputBuffer.getChannelData(1);
-        const outLength = outLeft.length;
-
-        const targetSec = this.getTargetLatencySeconds();
-        const targetFrames = targetSec * this.backendSampleRate;
-        const prebufferThreshold = targetFrames * 1.05;
-
-        // Start playback once initial prebuffer is filled
-        if (!this.isPlaying) {
-          if (this.availableFrames >= prebufferThreshold) {
-            this.isPlaying = true;
-          } else {
-            outLeft.fill(0);
-            outRight.fill(0);
-            return;
-          }
-        }
-
-        // Catch up if buffer grew excessively (e.g. background tab resumed)
-        const maxHeadroomFrames = targetFrames * 3.5;
-        if (this.availableFrames > maxHeadroomFrames) {
-          const excess = this.availableFrames - targetFrames;
-          this.readFrameFloat = (this.readFrameFloat + excess) % this.RING_CAPACITY_FRAMES;
-          this.availableFrames -= excess;
-          this.softGain = 0.2; // brief soften to prevent click
-        }
-
-        // Buffer Underrun Check: if network packet was delayed, fade out gracefully without glitching
-        if (this.availableFrames < outLength * this.currentRatio) {
-          for (let i = 0; i < outLength; i++) {
-            this.softGain = Math.max(0.0, this.softGain - 0.02);
-            outLeft[i] *= this.softGain;
-            outRight[i] *= this.softGain;
-          }
-          this.isPlaying = false; // pause until packet refill
+      if (this.streamingEngine === 'webrtc') {
+        try {
+          await this.startWebRtcStream();
           return;
+        } catch (webrtcErr) {
+          console.warn('WebRTC audio connection failed, falling back to WebSocket:', webrtcErr);
+          this.stopWebRtc();
+          this.streamingEngine = 'websocket';
         }
-
-        // --- Proportional-Integral (PI) Clock Drift Controller ---
-        // Dynamically adjusts playback speed by up to ±1.5% to maintain exact target latency
-        // Without ANY jumps, frame drops, or robotic pitch zigzag!
-        const frameError = this.availableFrames - targetFrames;
-        const errorSec = frameError / this.backendSampleRate;
-
-        // P term: immediate correction
-        const pTerm = errorSec * 0.35;
-        // I term: cumulative drift compensation
-        this.integralErr += errorSec * (outLength / this.deviceSampleRate) * 0.05;
-        this.integralErr = Math.max(-0.012, Math.min(0.012, this.integralErr));
-
-        // Speed adjustment delta capped at ±1.5% (imperceptible to human ears)
-        const speedDelta = Math.max(-0.015, Math.min(0.015, pTerm + this.integralErr));
-        this.currentRatio = this.nominalRatio * (1.0 + speedDelta);
-
-        // --- Linear Interpolation Resampling ---
-        const cap = this.RING_CAPACITY_FRAMES;
-        for (let i = 0; i < outLength; i++) {
-          if (this.availableFrames < 2) {
-            outLeft[i] = 0;
-            outRight[i] = 0;
-            continue;
-          }
-
-          const f0 = Math.floor(this.readFrameFloat);
-          const frac = this.readFrameFloat - f0;
-          const idx0 = f0 % cap;
-          const idx1 = (idx0 + 1) % cap;
-
-          const s0_L = this.ringBuffer[idx0 * 2];
-          const s0_R = this.ringBuffer[idx0 * 2 + 1];
-          const s1_L = this.ringBuffer[idx1 * 2];
-          const s1_R = this.ringBuffer[idx1 * 2 + 1];
-
-          // Linearly interpolated stereo samples
-          const sampleL = s0_L + frac * (s1_L - s0_L);
-          const sampleR = s0_R + frac * (s1_R - s0_R);
-
-          // Smooth ramp-up to eliminate start/restart pops
-          if (this.softGain < 1.0) {
-            this.softGain = Math.min(1.0, this.softGain + 0.01);
-          }
-
-          outLeft[i] = sampleL * this.softGain;
-          outRight[i] = sampleR * this.softGain;
-
-          this.readFrameFloat = (this.readFrameFloat + this.currentRatio) % cap;
-          this.availableFrames -= this.currentRatio;
-        }
-      };
-
-      // Connect DSP chain: Processor -> Gain -> Compressor -> Analyser -> Destination
-      this.processor.connect(this.gainNode);
-      this.gainNode.connect(this.compressorNode);
-      this.compressorNode.connect(this.analyserNode);
-      this.analyserNode.connect(this.audioCtx.destination);
-
-      // Mobile Safari keepalive audio source
-      try {
-        const dummy = this.audioCtx.createBufferSource();
-        dummy.buffer = this.audioCtx.createBuffer(1, 1, 22050);
-        dummy.connect(this.audioCtx.destination);
-        dummy.start(0);
-      } catch {
-        // ignore
       }
 
-      // 4. Connect WebSocket
-      const serverUrl = getDefaultServerUrl();
-      const wsUrl = serverUrl.replace(/^http/, 'ws') + `/api/v1/audio/ws?token=${encodeURIComponent(token)}`;
-
-      this.ws = new WebSocket(wsUrl);
-      this.ws.binaryType = 'arraybuffer';
-
-      this.ws.onopen = () => {
-        this.isRunning = true;
-        this.onStateChangeCallback?.(true);
-      };
-
-      this.ws.onmessage = (event: MessageEvent) => {
-        if (typeof event.data === 'string') {
-          try {
-            const meta = JSON.parse(event.data);
-            if (meta.type === 'init') {
-              this.backendSampleRate = meta.sampleRate || 48000;
-              this.backendChannels = meta.channels || 2;
-              if (this.audioCtx) {
-                this.deviceSampleRate = this.audioCtx.sampleRate || 48000;
-                this.nominalRatio = this.backendSampleRate / this.deviceSampleRate;
-                this.currentRatio = this.nominalRatio;
-              }
-            }
-          } catch {
-            // ignore
-          }
-          return;
-        }
-
-        if (event.data instanceof ArrayBuffer) {
-          this.enqueuePcmChunk(event.data);
-        }
-      };
-
-      this.ws.onerror = () => {
-        this.stop('Audio connection error');
-      };
-
-      this.ws.onclose = () => {
-        this.stop();
-      };
+      await this.startWebSocketStream(token);
     } catch (err: any) {
       this.stop(err?.message || 'Audio initialization failed');
     }
+  }
+
+  private async startWebRtcStream(): Promise<void> {
+    this.pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+      ]
+    });
+
+    this.pc.addTransceiver('audio', { direction: 'recvonly' });
+
+    if (!this.audioElement) {
+      this.audioElement = new Audio();
+      this.audioElement.autoplay = true;
+      (this.audioElement as any).playsInline = true;
+    }
+
+    this.pc.ontrack = (event) => {
+      const stream = event.streams[0] || new MediaStream([event.track]);
+      this.audioElement!.srcObject = stream;
+      this.audioElement!.play().catch(() => {});
+
+      if (this.audioCtx && this.gainNode) {
+        try {
+          if (this.mediaStreamSource) {
+            this.mediaStreamSource.disconnect();
+          }
+          this.mediaStreamSource = this.audioCtx.createMediaStreamSource(stream);
+          this.mediaStreamSource.connect(this.gainNode);
+          // Mute raw audio element to allow volume boost and DSP through Web Audio
+          this.audioElement!.muted = true;
+        } catch {
+          this.audioElement!.muted = false;
+        }
+      }
+      this.isRunning = true;
+      this.isPlaying = true;
+      this.onStateChangeCallback?.(true);
+    };
+
+    const offer = await this.pc.createOffer({
+      offerToReceiveAudio: true,
+      offerToReceiveVideo: false
+    });
+    await this.pc.setLocalDescription(offer);
+
+    // Wait for candidate gathering
+    await new Promise<void>((resolve) => {
+      if (this.pc!.iceGatheringState === 'complete') {
+        resolve();
+      } else {
+        const onGather = () => {
+          if (this.pc!.iceGatheringState === 'complete') {
+            this.pc!.removeEventListener('icegatheringstatechange', onGather);
+            resolve();
+          }
+        };
+        this.pc!.addEventListener('icegatheringstatechange', onGather);
+        setTimeout(resolve, 600);
+      }
+    });
+
+    const answer = await api.sendWebRtcOffer(
+      this.pc.localDescription!.sdp,
+      this.pc.localDescription!.type
+    );
+
+    if (!answer) {
+      throw new Error('WebRTC signaling failed');
+    }
+
+    await this.pc.setRemoteDescription(new RTCSessionDescription(answer as any));
+
+    this.pc.onconnectionstatechange = () => {
+      if (this.pc?.connectionState === 'connected') {
+        this.isRunning = true;
+        this.isPlaying = true;
+        this.onStateChangeCallback?.(true);
+      } else if (this.pc?.connectionState === 'failed' || this.pc?.connectionState === 'disconnected') {
+        console.warn('WebRTC disconnected, falling back to WebSocket stream');
+        const token = getStoredToken();
+        this.stopWebRtc();
+        this.streamingEngine = 'websocket';
+        if (token) {
+          this.startWebSocketStream(token).catch(() => {});
+        }
+      }
+    };
+  }
+
+  private async startWebSocketStream(token: string): Promise<void> {
+    // Reset Buffer & DSP State
+    this.ringBuffer.fill(0);
+    this.writeFrameIdx = 0;
+    this.readFrameFloat = 0.0;
+    this.availableFrames = 0;
+    this.isPlaying = false;
+    this.integralErr = 0.0;
+    this.softGain = 0.0;
+
+    const bufferSize = 1024;
+    this.processor = this.audioCtx!.createScriptProcessor(bufferSize, 1, 2);
+
+    try {
+      const silentBuffer = this.audioCtx!.createBuffer(1, 1024, this.deviceSampleRate);
+      this.keepAliveSource = this.audioCtx!.createBufferSource();
+      this.keepAliveSource.buffer = silentBuffer;
+      this.keepAliveSource.loop = true;
+      this.keepAliveSource.connect(this.processor);
+      this.keepAliveSource.start();
+    } catch {
+      // ignore
+    }
+
+    this.processor.onaudioprocess = (e: AudioProcessingEvent) => {
+      const outLeft = e.outputBuffer.getChannelData(0);
+      const outRight = e.outputBuffer.getChannelData(1);
+      const outLength = outLeft.length;
+
+      const targetSec = this.getTargetLatencySeconds();
+      const targetFrames = targetSec * this.backendSampleRate;
+      const prebufferThreshold = targetFrames * 1.05;
+
+      if (!this.isPlaying) {
+        if (this.availableFrames >= prebufferThreshold) {
+          this.isPlaying = true;
+        } else {
+          outLeft.fill(0);
+          outRight.fill(0);
+          return;
+        }
+      }
+
+      const maxHeadroomFrames = targetFrames * 3.5;
+      if (this.availableFrames > maxHeadroomFrames) {
+        const excess = this.availableFrames - targetFrames;
+        this.readFrameFloat = (this.readFrameFloat + excess) % this.RING_CAPACITY_FRAMES;
+        this.availableFrames -= excess;
+        this.softGain = 0.2;
+      }
+
+      if (this.availableFrames < outLength * this.currentRatio) {
+        for (let i = 0; i < outLength; i++) {
+          this.softGain = Math.max(0.0, this.softGain - 0.02);
+          outLeft[i] *= this.softGain;
+          outRight[i] *= this.softGain;
+        }
+        this.isPlaying = false;
+        return;
+      }
+
+      // PI Clock Drift Controller
+      const frameError = this.availableFrames - targetFrames;
+      const errorSec = frameError / this.backendSampleRate;
+      const pTerm = errorSec * 0.35;
+      this.integralErr += errorSec * (outLength / this.deviceSampleRate) * 0.05;
+      this.integralErr = Math.max(-0.012, Math.min(0.012, this.integralErr));
+      const speedDelta = Math.max(-0.015, Math.min(0.015, pTerm + this.integralErr));
+      this.currentRatio = this.nominalRatio * (1.0 + speedDelta);
+
+      // Linear Resampling
+      const cap = this.RING_CAPACITY_FRAMES;
+      for (let i = 0; i < outLength; i++) {
+        if (this.availableFrames < 2) {
+          outLeft[i] = 0;
+          outRight[i] = 0;
+          continue;
+        }
+
+        const f0 = Math.floor(this.readFrameFloat);
+        const frac = this.readFrameFloat - f0;
+        const idx0 = f0 % cap;
+        const idx1 = (idx0 + 1) % cap;
+
+        const s0_L = this.ringBuffer[idx0 * 2];
+        const s0_R = this.ringBuffer[idx0 * 2 + 1];
+        const s1_L = this.ringBuffer[idx1 * 2];
+        const s1_R = this.ringBuffer[idx1 * 2 + 1];
+
+        const sampleL = s0_L + frac * (s1_L - s0_L);
+        const sampleR = s0_R + frac * (s1_R - s0_R);
+
+        if (this.softGain < 1.0) {
+          this.softGain = Math.min(1.0, this.softGain + 0.01);
+        }
+
+        outLeft[i] = sampleL * this.softGain;
+        outRight[i] = sampleR * this.softGain;
+
+        this.readFrameFloat = (this.readFrameFloat + this.currentRatio) % cap;
+        this.availableFrames -= this.currentRatio;
+      }
+    };
+
+    this.processor.connect(this.gainNode!);
+
+    // Connect WebSocket
+    const serverUrl = getDefaultServerUrl();
+    const wsUrl = serverUrl.replace(/^http/, 'ws') + `/api/v1/audio/ws?token=${encodeURIComponent(token)}`;
+
+    this.ws = new WebSocket(wsUrl);
+    this.ws.binaryType = 'arraybuffer';
+
+    this.ws.onopen = () => {
+      this.isRunning = true;
+      this.onStateChangeCallback?.(true);
+    };
+
+    this.ws.onmessage = (event: MessageEvent) => {
+      if (typeof event.data === 'string') {
+        try {
+          const meta = JSON.parse(event.data);
+          if (meta.type === 'init') {
+            this.backendSampleRate = meta.sampleRate || 48000;
+            this.backendChannels = meta.channels || 2;
+            if (this.audioCtx) {
+              this.deviceSampleRate = this.audioCtx.sampleRate || 48000;
+              this.nominalRatio = this.backendSampleRate / this.deviceSampleRate;
+              this.currentRatio = this.nominalRatio;
+            }
+          }
+        } catch {
+          // ignore
+        }
+        return;
+      }
+
+      if (event.data instanceof ArrayBuffer) {
+        this.enqueuePcmChunk(event.data);
+      }
+    };
+
+    this.ws.onerror = () => {
+      this.stop('Audio connection error');
+    };
+
+    this.ws.onclose = () => {
+      this.stop();
+    };
   }
 
   private enqueuePcmChunk(buffer: ArrayBuffer) {
@@ -368,7 +480,6 @@ export class AudioStreamClient {
     const numFrames = Math.floor(numSamples / 2);
     const cap = this.RING_CAPACITY_FRAMES;
 
-    // Fast batch write into ring buffer with normalization to [-1.0, 1.0]
     for (let f = 0; f < numFrames; f++) {
       const idx = (this.writeFrameIdx + f) % cap;
       this.ringBuffer[idx * 2] = int16[f * 2] / 32768.0;
@@ -379,7 +490,30 @@ export class AudioStreamClient {
     this.availableFrames = Math.min(cap, this.availableFrames + numFrames);
   }
 
+  private stopWebRtc() {
+    if (this.pc) {
+      this.pc.onconnectionstatechange = null;
+      this.pc.ontrack = null;
+      this.pc.close();
+      this.pc = null;
+    }
+    if (this.audioElement) {
+      this.audioElement.pause();
+      this.audioElement.srcObject = null;
+    }
+    if (this.mediaStreamSource) {
+      try {
+        this.mediaStreamSource.disconnect();
+      } catch {
+        // ignore
+      }
+      this.mediaStreamSource = null;
+    }
+  }
+
   public stop(error?: string): void {
+    this.stopWebRtc();
+
     if (this.ws) {
       this.ws.onclose = null;
       this.ws.onerror = null;

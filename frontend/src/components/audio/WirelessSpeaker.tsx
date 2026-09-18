@@ -27,6 +27,7 @@ export const WirelessSpeaker: React.FC = () => {
   const [volume, setVolume] = useState<number>(sharedAudioClient.getVolume());
   const [isPhoneMuted, setIsPhoneMuted] = useState<boolean>(sharedAudioClient.isMuted());
   const [latencyPreset, setLatencyPreset] = useState<LatencyPreset>(sharedAudioClient.getLatencyPreset());
+  const [streamingEngine, setStreamingEngine] = useState<'webrtc' | 'websocket'>(sharedAudioClient.getStreamingEngine());
   const [isLaptopMuted, setIsLaptopMuted] = useState<boolean>(false);
   const [frequencies, setFrequencies] = useState<number[]>(new Array(16).fill(0));
   const [bluetoothDevices, setBluetoothDevices] = useState<{ name: string; status: string; connected: boolean }[]>([]);
@@ -41,6 +42,7 @@ export const WirelessSpeaker: React.FC = () => {
       setIsActive(sharedAudioClient.isActive());
       setVolume(sharedAudioClient.getVolume());
       setIsPhoneMuted(sharedAudioClient.isMuted());
+      setStreamingEngine(sharedAudioClient.getStreamingEngine());
     };
 
     const interval = setInterval(checkState, 1000);
@@ -97,6 +99,11 @@ export const WirelessSpeaker: React.FC = () => {
   const handleToggleLatency = (preset: LatencyPreset) => {
     setLatencyPreset(preset);
     sharedAudioClient.setLatencyPreset(preset);
+  };
+
+  const handleToggleEngine = (eng: 'webrtc' | 'websocket') => {
+    setStreamingEngine(eng);
+    sharedAudioClient.setStreamingEngine(eng);
   };
 
   const handleMuteLaptopSpeakers = async () => {
@@ -254,7 +261,7 @@ export const WirelessSpeaker: React.FC = () => {
                 </span>
                 <span className="text-[10px] font-mono text-emerald-400 flex items-center gap-1">
                   <ShieldCheck className="w-3 h-3 text-emerald-400" />
-                  48,000 Hz Lossless PCM • Studio Limiter Active
+                  {streamingEngine === 'webrtc' ? 'WebRTC + Opus (UDP) • NetEQ Active' : '48,000 Hz Lossless PCM • Studio Limiter Active'}
                 </span>
               </div>
               <div className="flex items-end justify-between gap-1.5 h-12 pt-1 px-1">
@@ -277,38 +284,69 @@ export const WirelessSpeaker: React.FC = () => {
           <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3 relative z-10">
             {/* Phone Volume & Boost Slider */}
             <div className="p-3.5 rounded-2xl bg-dark-950 border border-dark-800 flex flex-col justify-between">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
-                  <Smartphone className="w-3.5 h-3.5 text-brand-primary" />
-                  Phone Speaker Output
-                </span>
-                <span className={`text-[11px] font-mono font-bold ${volume > 1.0 ? 'text-amber-400' : 'text-slate-300'}`}>
-                  {isPhoneMuted ? 'Muted' : `${Math.round(volume * 100)}%${volume > 1.0 ? ' Boost' : ''}`}
-                </span>
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
+                    <Smartphone className="w-3.5 h-3.5 text-brand-primary" />
+                    Phone Speaker Output
+                  </span>
+                  <span className={`text-[11px] font-mono font-bold ${volume > 1.0 ? 'text-amber-400' : 'text-slate-300'}`}>
+                    {isPhoneMuted ? 'Muted' : `${Math.round(volume * 100)}%${volume > 1.0 ? ' Boost' : ''}`}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={handleTogglePhoneMute}
+                    className={`p-1.5 rounded-lg border transition-all ${
+                      isPhoneMuted
+                        ? 'bg-rose-500/20 border-rose-500/40 text-rose-400'
+                        : 'bg-dark-900 border-dark-700 text-slate-400 hover:text-white'
+                    }`}
+                    title={isPhoneMuted ? 'Unmute phone' : 'Mute phone'}
+                  >
+                    {isPhoneMuted ? <VolumeX className="w-4 h-4" /> : <Volume1 className="w-4 h-4" />}
+                  </button>
+
+                  <input
+                    type="range"
+                    min="0"
+                    max="1.5"
+                    step="0.05"
+                    value={isPhoneMuted ? 0 : volume}
+                    onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
+                    className="flex-1 h-2 bg-dark-800 rounded-lg appearance-none cursor-pointer accent-brand-primary"
+                  />
+                </div>
               </div>
 
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={handleTogglePhoneMute}
-                  className={`p-1.5 rounded-lg border transition-all ${
-                    isPhoneMuted
-                      ? 'bg-rose-500/20 border-rose-500/40 text-rose-400'
-                      : 'bg-dark-900 border-dark-700 text-slate-400 hover:text-white'
-                  }`}
-                  title={isPhoneMuted ? 'Unmute phone' : 'Mute phone'}
-                >
-                  {isPhoneMuted ? <VolumeX className="w-4 h-4" /> : <Volume1 className="w-4 h-4" />}
-                </button>
-
-                <input
-                  type="range"
-                  min="0"
-                  max="1.5"
-                  step="0.05"
-                  value={isPhoneMuted ? 0 : volume}
-                  onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
-                  className="flex-1 h-2 bg-dark-800 rounded-lg appearance-none cursor-pointer accent-brand-primary"
-                />
+              {/* Streaming Protocol Engine Selector */}
+              <div className="flex items-center justify-between pt-2 mt-2 border-t border-dark-800/60">
+                <span className="text-[10px] text-slate-400 font-medium">Protocol</span>
+                <div className="flex items-center bg-dark-900 p-0.5 rounded-lg border border-dark-800 text-[10px]">
+                  <button
+                    onClick={() => handleToggleEngine('webrtc')}
+                    className={`px-2 py-0.5 rounded-md font-bold transition-all ${
+                      streamingEngine === 'webrtc'
+                        ? 'bg-emerald-500 text-dark-950 shadow-sm'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                    title="WebRTC + Opus over UDP: zero-zigzag, resilient to packet loss"
+                  >
+                    WebRTC (Opus)
+                  </button>
+                  <button
+                    onClick={() => handleToggleEngine('websocket')}
+                    className={`px-2 py-0.5 rounded-md font-bold transition-all ${
+                      streamingEngine === 'websocket'
+                        ? 'bg-brand-primary text-dark-950 shadow-sm'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                    title="WebSocket: uncompressed 48kHz lossless studio PCM"
+                  >
+                    WebSocket (PCM)
+                  </button>
+                </div>
               </div>
             </div>
 
