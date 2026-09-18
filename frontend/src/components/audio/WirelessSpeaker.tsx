@@ -13,13 +13,14 @@ import {
   Sun
 } from 'lucide-react';
 import { sharedAudioClient } from '../../services/audioStream';
+import type { LatencyPreset } from '../../services/audioStream';
 import { api } from '../../services/api';
 
 export const WirelessSpeaker: React.FC = () => {
   const [isActive, setIsActive] = useState<boolean>(sharedAudioClient.isActive());
   const [volume, setVolume] = useState<number>(sharedAudioClient.getVolume());
   const [isPhoneMuted, setIsPhoneMuted] = useState<boolean>(sharedAudioClient.isMuted());
-  const [latencyPreset, setLatencyPreset] = useState<'movie' | 'music'>(sharedAudioClient.getLatencyPreset());
+  const [latencyPreset, setLatencyPreset] = useState<LatencyPreset>(sharedAudioClient.getLatencyPreset());
   const [isLaptopMuted, setIsLaptopMuted] = useState<boolean>(false);
   const [frequencies, setFrequencies] = useState<number[]>(new Array(16).fill(0));
 
@@ -85,7 +86,7 @@ export const WirelessSpeaker: React.FC = () => {
     setIsPhoneMuted(muted);
   };
 
-  const handleToggleLatency = (preset: 'movie' | 'music') => {
+  const handleToggleLatency = (preset: LatencyPreset) => {
     setLatencyPreset(preset);
     sharedAudioClient.setLatencyPreset(preset);
   };
@@ -258,15 +259,28 @@ export const WirelessSpeaker: React.FC = () => {
             </span>
             <div className="flex items-center bg-dark-900 p-0.5 rounded-xl border border-dark-800 text-[10px] font-medium">
               <button
+                onClick={() => handleToggleLatency('ultra')}
+                className={`px-2 py-1 rounded-lg flex items-center gap-1 transition-all ${
+                  latencyPreset === 'ultra'
+                    ? 'bg-brand-primary text-dark-950 font-bold'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+                title="Ultra-low latency (~50ms) for games and instant response"
+              >
+                <Zap className="w-3 h-3" />
+                <span>Ultra (50ms)</span>
+              </button>
+              <button
                 onClick={() => handleToggleLatency('movie')}
                 className={`px-2 py-1 rounded-lg flex items-center gap-1 transition-all ${
                   latencyPreset === 'movie'
                     ? 'bg-brand-primary text-dark-950 font-bold'
                     : 'text-slate-400 hover:text-white'
                 }`}
+                title="Balanced sync (~80ms) for YouTube & movies"
               >
                 <Tv className="w-3 h-3" />
-                <span>Movie (60ms)</span>
+                <span>Movie</span>
               </button>
               <button
                 onClick={() => handleToggleLatency('music')}
@@ -275,9 +289,10 @@ export const WirelessSpeaker: React.FC = () => {
                     ? 'bg-brand-primary text-dark-950 font-bold'
                     : 'text-slate-400 hover:text-white'
                 }`}
+                title="Rock-solid jitter buffer (~140ms) for music & weak Wi-Fi"
               >
                 <Music className="w-3 h-3" />
-                <span>Music (Smooth)</span>
+                <span>Music</span>
               </button>
             </div>
           </div>

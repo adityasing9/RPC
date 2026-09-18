@@ -28,7 +28,7 @@ class AudioLoopbackManager:
         self._device_info: Optional[dict] = None
         self.sample_rate: int = 48000
         self.channels: int = 2
-        self.chunk_ms: int = 50
+        self.chunk_ms: int = 25
 
     def get_info(self) -> dict:
         """Return audio device and stream capabilities."""

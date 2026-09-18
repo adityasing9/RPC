@@ -1,6 +1,13 @@
 import { getStoredToken, getDefaultServerUrl } from './api';
 
 export type AudioStateChangeHandler = (active: boolean, error?: string) => void;
+export type LatencyPreset = 'ultra' | 'movie' | 'music';
+
+export interface AudioStats {
+  latencyMs: number;
+  sampleRate: number;
+  deviceSampleRate: number;
+}
 
 export class AudioStreamClient {
   private ws: WebSocket | null = null;
@@ -10,22 +17,39 @@ export class AudioStreamClient {
   private analyserNode: AnalyserNode | null = null;
   private wakeLock: any = null;
 
-  // Circular Ring Buffer Configuration (2 seconds of 48kHz Stereo)
-  private readonly RING_CAPACITY = 48000 * 2 * 2; // 192,000 samples
-  private ringBuffer = new Float32Array(this.RING_CAPACITY);
-  private writePtr = 0;
-  private readPtr = 0;
-  private availableSamples = 0;
-  private hasStartedPlayback = false;
+  // Ring Buffer: Interleaved Stereo Float32 Samples
+  // 96,000 frames = 2 seconds of 48kHz Stereo (192,000 floats)
+  private readonly RING_CAPACITY_FRAMES = 96000;
+  private ringBuffer = new Float32Array(this.RING_CAPACITY_FRAMES * 2);
+  private writeFrameIdx = 0;
+  private readFrameFloat = 0.0;
+  private availableFrames = 0;
+  private isPlaying = false;
 
-  // Audio & DSP Configuration
-  public sampleRate = 48000;
-  public channels = 2;
+  // Audio & Hardware Configuration
+  public backendSampleRate = 48000;
+  public backendChannels = 2;
+  public deviceSampleRate = 48000;
+  private nominalRatio = 1.0;
+
+  // Drift Control Loop (Proportional-Integral)
+  private integralErr = 0.0;
+  private currentRatio = 1.0;
+  private softGain = 0.0; // Smooth 0.0 -> 1.0 ramp to eliminate clicks & pops
+
+  // Controls & Settings
   private volume = 1.0;
   private isPhoneMutedState = false;
-  private latencyPreset: 'movie' | 'music' = 'movie';
+  private latencyPreset: LatencyPreset = 'movie';
   private isRunning = false;
   private onStateChangeCallback?: AudioStateChangeHandler;
+
+  // Diagnostic Stats
+  private stats: AudioStats = {
+    latencyMs: 75,
+    sampleRate: 48000,
+    deviceSampleRate: 48000
+  };
 
   constructor(onStateChange?: AudioStateChangeHandler) {
     this.onStateChangeCallback = onStateChange;
@@ -58,20 +82,39 @@ export class AudioStreamClient {
     return this.isPhoneMutedState;
   }
 
-  public getLatencyPreset(): 'movie' | 'music' {
+  public getLatencyPreset(): LatencyPreset {
     return this.latencyPreset;
   }
 
-  public setLatencyPreset(mode: 'movie' | 'music'): void {
+  public setLatencyPreset(mode: LatencyPreset): void {
     this.latencyPreset = mode;
-    this.hasStartedPlayback = false;
+    this.integralErr = 0;
+  }
+
+  public getStats(): AudioStats {
+    this.stats.latencyMs = Math.round((this.availableFrames / this.backendSampleRate) * 1000);
+    this.stats.sampleRate = this.backendSampleRate;
+    this.stats.deviceSampleRate = this.deviceSampleRate;
+    return this.stats;
   }
 
   public getFrequencyData(array: Uint8Array): void {
-    if (this.analyserNode && this.isRunning) {
+    if (this.analyserNode && this.isRunning && this.isPlaying) {
       this.analyserNode.getByteFrequencyData(array as any);
     } else {
       array.fill(0);
+    }
+  }
+
+  private getTargetLatencySeconds(): number {
+    switch (this.latencyPreset) {
+      case 'ultra':
+        return 0.050; // ~50ms ultra-low latency
+      case 'movie':
+        return 0.080; // ~80ms smooth sync
+      case 'music':
+      default:
+        return 0.140; // ~140ms jitter buffer
     }
   }
 
@@ -89,7 +132,7 @@ export class AudioStreamClient {
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       if (!this.audioCtx || this.audioCtx.state === 'closed') {
         try {
-          this.audioCtx = new AudioContextClass({ sampleRate: 48000 });
+          this.audioCtx = new AudioContextClass({ sampleRate: 48000, latencyHint: 'interactive' });
         } catch {
           this.audioCtx = new AudioContextClass();
         }
@@ -99,24 +142,31 @@ export class AudioStreamClient {
         await this.audioCtx.resume();
       }
 
-      // 2. Request Screen WakeLock so mobile phone doesn't sleep while acting as wireless speaker
+      this.deviceSampleRate = this.audioCtx.sampleRate || 48000;
+      this.nominalRatio = this.backendSampleRate / this.deviceSampleRate;
+      this.currentRatio = this.nominalRatio;
+
+      // 2. Request Screen WakeLock so mobile phone doesn't sleep
       if ('wakeLock' in navigator) {
         try {
           this.wakeLock = await (navigator as any).wakeLock.request('screen');
         } catch {
-          // ignore if denied or unsupported
+          // ignore wakeLock error
         }
       }
 
-      // Reset Ring Buffer
+      // Reset Buffer & DSP State
       this.ringBuffer.fill(0);
-      this.writePtr = 0;
-      this.readPtr = 0;
-      this.availableSamples = 0;
-      this.hasStartedPlayback = false;
+      this.writeFrameIdx = 0;
+      this.readFrameFloat = 0.0;
+      this.availableFrames = 0;
+      this.isPlaying = false;
+      this.integralErr = 0.0;
+      this.softGain = 0.0;
 
-      // 3. Create DSP Chain: Processor -> GainNode -> AnalyserNode -> Destination
-      const bufferSize = 2048;
+      // 3. Audio Processing Pipeline: ScriptProcessor -> GainNode -> AnalyserNode -> Destination
+      // 1024 frame buffer for swift responsiveness
+      const bufferSize = 1024;
       this.processor = this.audioCtx.createScriptProcessor(bufferSize, 0, 2);
 
       this.gainNode = this.audioCtx.createGain();
@@ -127,61 +177,94 @@ export class AudioStreamClient {
       this.analyserNode.smoothingTimeConstant = 0.8;
 
       this.processor.onaudioprocess = (e: AudioProcessingEvent) => {
-        const left = e.outputBuffer.getChannelData(0);
-        const right = e.outputBuffer.getChannelData(1);
-        const frames = left.length;
-        const needed = frames * 2; // Stereo interleaved
+        const outLeft = e.outputBuffer.getChannelData(0);
+        const outRight = e.outputBuffer.getChannelData(1);
+        const outLength = outLeft.length;
 
-        // Pre-buffer threshold based on latency preset
-        // Movie: ~70ms buffer (3,360 stereo frames = 6,720 samples)
-        // Music: ~140ms buffer (6,720 stereo frames = 13,440 samples)
-        const prebufferSamples = this.latencyPreset === 'movie' ? 48000 * 0.07 * 2 : 48000 * 0.14 * 2;
+        const targetSec = this.getTargetLatencySeconds();
+        const targetFrames = targetSec * this.backendSampleRate;
+        const prebufferThreshold = targetFrames * 1.05;
 
-        if (!this.hasStartedPlayback) {
-          if (this.availableSamples >= prebufferSamples) {
-            this.hasStartedPlayback = true;
+        // Start playback once initial prebuffer is filled
+        if (!this.isPlaying) {
+          if (this.availableFrames >= prebufferThreshold) {
+            this.isPlaying = true;
           } else {
-            left.fill(0);
-            right.fill(0);
+            outLeft.fill(0);
+            outRight.fill(0);
             return;
           }
         }
 
-        // Buffer Underrun Handling: If network packet was delayed, output smooth silence
-        if (this.availableSamples < needed) {
-          for (let i = 0; i < frames; i++) {
-            if (this.availableSamples >= 2) {
-              left[i] = this.ringBuffer[this.readPtr];
-              this.readPtr = (this.readPtr + 1) % this.RING_CAPACITY;
-              right[i] = this.ringBuffer[this.readPtr];
-              this.readPtr = (this.readPtr + 1) % this.RING_CAPACITY;
-              this.availableSamples -= 2;
-            } else {
-              left[i] = 0;
-              right[i] = 0;
-            }
+        // Catch up if buffer grew excessively (e.g. background tab resumed)
+        const maxHeadroomFrames = targetFrames * 3.5;
+        if (this.availableFrames > maxHeadroomFrames) {
+          const excess = this.availableFrames - targetFrames;
+          this.readFrameFloat = (this.readFrameFloat + excess) % this.RING_CAPACITY_FRAMES;
+          this.availableFrames -= excess;
+          this.softGain = 0.2; // brief soften to prevent click
+        }
+
+        // Buffer Underrun Check: if network packet was delayed, fade out gracefully without glitching
+        if (this.availableFrames < outLength * this.currentRatio) {
+          for (let i = 0; i < outLength; i++) {
+            this.softGain = Math.max(0.0, this.softGain - 0.02);
+            outLeft[i] *= this.softGain;
+            outRight[i] *= this.softGain;
           }
-          this.hasStartedPlayback = false; // Wait for brief refill before playing again
+          this.isPlaying = false; // pause until packet refill
           return;
         }
 
-        // Seamless continuous linear sample playback:
-        for (let i = 0; i < frames; i++) {
-          left[i] = this.ringBuffer[this.readPtr];
-          this.readPtr = (this.readPtr + 1) % this.RING_CAPACITY;
-          right[i] = this.ringBuffer[this.readPtr];
-          this.readPtr = (this.readPtr + 1) % this.RING_CAPACITY;
-        }
-        this.availableSamples -= needed;
+        // --- Proportional-Integral (PI) Clock Drift Controller ---
+        // Dynamically adjusts playback speed by up to ±1.5% to maintain exact target latency
+        // Without ANY jumps, frame drops, or robotic pitch zigzag!
+        const frameError = this.availableFrames - targetFrames;
+        const errorSec = frameError / this.backendSampleRate;
 
-        // Clock drift control: Keep playback tightly synchronized in real time
-        const maxBufferLead = this.latencyPreset === 'movie' ? 48000 * 2 * 0.18 : 48000 * 2 * 0.30;
-        const targetLead = this.latencyPreset === 'movie' ? 48000 * 2 * 0.07 : 48000 * 2 * 0.14;
+        // P term: immediate correction
+        const pTerm = errorSec * 0.35;
+        // I term: cumulative drift compensation
+        this.integralErr += errorSec * (outLength / this.deviceSampleRate) * 0.05;
+        this.integralErr = Math.max(-0.012, Math.min(0.012, this.integralErr));
 
-        if (this.availableSamples > maxBufferLead) {
-          const excess = this.availableSamples - targetLead;
-          this.readPtr = (this.readPtr + excess) % this.RING_CAPACITY;
-          this.availableSamples -= excess;
+        // Speed adjustment delta capped at ±1.5% (imperceptible to human ears)
+        const speedDelta = Math.max(-0.015, Math.min(0.015, pTerm + this.integralErr));
+        this.currentRatio = this.nominalRatio * (1.0 + speedDelta);
+
+        // --- Linear Interpolation Resampling ---
+        const cap = this.RING_CAPACITY_FRAMES;
+        for (let i = 0; i < outLength; i++) {
+          if (this.availableFrames < 2) {
+            outLeft[i] = 0;
+            outRight[i] = 0;
+            continue;
+          }
+
+          const f0 = Math.floor(this.readFrameFloat);
+          const frac = this.readFrameFloat - f0;
+          const idx0 = f0 % cap;
+          const idx1 = (idx0 + 1) % cap;
+
+          const s0_L = this.ringBuffer[idx0 * 2];
+          const s0_R = this.ringBuffer[idx0 * 2 + 1];
+          const s1_L = this.ringBuffer[idx1 * 2];
+          const s1_R = this.ringBuffer[idx1 * 2 + 1];
+
+          // Linearly interpolated stereo samples
+          const sampleL = s0_L + frac * (s1_L - s0_L);
+          const sampleR = s0_R + frac * (s1_R - s0_R);
+
+          // Smooth ramp-up to eliminate start/restart pops
+          if (this.softGain < 1.0) {
+            this.softGain = Math.min(1.0, this.softGain + 0.01);
+          }
+
+          outLeft[i] = sampleL * this.softGain;
+          outRight[i] = sampleR * this.softGain;
+
+          this.readFrameFloat = (this.readFrameFloat + this.currentRatio) % cap;
+          this.availableFrames -= this.currentRatio;
         }
       };
 
@@ -217,8 +300,13 @@ export class AudioStreamClient {
           try {
             const meta = JSON.parse(event.data);
             if (meta.type === 'init') {
-              this.sampleRate = meta.sampleRate || 48000;
-              this.channels = meta.channels || 2;
+              this.backendSampleRate = meta.sampleRate || 48000;
+              this.backendChannels = meta.channels || 2;
+              if (this.audioCtx) {
+                this.deviceSampleRate = this.audioCtx.sampleRate || 48000;
+                this.nominalRatio = this.backendSampleRate / this.deviceSampleRate;
+                this.currentRatio = this.nominalRatio;
+              }
             }
           } catch {
             // ignore
@@ -254,12 +342,18 @@ export class AudioStreamClient {
     const numSamples = int16.length;
     if (numSamples <= 0) return;
 
-    // Direct circular buffer write
-    for (let i = 0; i < numSamples; i++) {
-      this.ringBuffer[this.writePtr] = int16[i] / 32768.0;
-      this.writePtr = (this.writePtr + 1) % this.RING_CAPACITY;
+    const numFrames = Math.floor(numSamples / 2);
+    const cap = this.RING_CAPACITY_FRAMES;
+
+    // Fast batch write into ring buffer with normalization to [-1.0, 1.0]
+    for (let f = 0; f < numFrames; f++) {
+      const idx = (this.writeFrameIdx + f) % cap;
+      this.ringBuffer[idx * 2] = int16[f * 2] / 32768.0;
+      this.ringBuffer[idx * 2 + 1] = int16[f * 2 + 1] / 32768.0;
     }
-    this.availableSamples += numSamples;
+
+    this.writeFrameIdx = (this.writeFrameIdx + numFrames) % cap;
+    this.availableFrames = Math.min(cap, this.availableFrames + numFrames);
   }
 
   public stop(error?: string): void {
@@ -295,8 +389,8 @@ export class AudioStreamClient {
       this.audioCtx.suspend().catch(() => {});
     }
     this.isRunning = false;
-    this.hasStartedPlayback = false;
-    this.availableSamples = 0;
+    this.isPlaying = false;
+    this.availableFrames = 0;
     this.onStateChangeCallback?.(false, error);
   }
 
