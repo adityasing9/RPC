@@ -10,19 +10,27 @@ import {
   Tv,
   Laptop,
   Smartphone,
-  Sun
+  Sun,
+  Bluetooth,
+  Headphones,
+  ShieldCheck,
+  ExternalLink,
+  RefreshCw
 } from 'lucide-react';
 import { sharedAudioClient } from '../../services/audioStream';
 import type { LatencyPreset } from '../../services/audioStream';
 import { api } from '../../services/api';
 
 export const WirelessSpeaker: React.FC = () => {
+  const [audioTab, setAudioTab] = useState<'wifi' | 'bluetooth'>('wifi');
   const [isActive, setIsActive] = useState<boolean>(sharedAudioClient.isActive());
   const [volume, setVolume] = useState<number>(sharedAudioClient.getVolume());
   const [isPhoneMuted, setIsPhoneMuted] = useState<boolean>(sharedAudioClient.isMuted());
   const [latencyPreset, setLatencyPreset] = useState<LatencyPreset>(sharedAudioClient.getLatencyPreset());
   const [isLaptopMuted, setIsLaptopMuted] = useState<boolean>(false);
   const [frequencies, setFrequencies] = useState<number[]>(new Array(16).fill(0));
+  const [bluetoothDevices, setBluetoothDevices] = useState<{ name: string; status: string; connected: boolean }[]>([]);
+  const [loadingBt, setLoadingBt] = useState<boolean>(false);
 
   const animFrameRef = useRef<number | null>(null);
   const freqDataRef = useRef<Uint8Array>(new Uint8Array(32));
@@ -100,6 +108,26 @@ export const WirelessSpeaker: React.FC = () => {
     }
   };
 
+  const fetchBluetoothDevices = async () => {
+    setLoadingBt(true);
+    try {
+      const devs = await api.getBluetoothAudioDevices();
+      setBluetoothDevices(devs);
+    } catch (e) {
+      console.error('Failed to fetch Bluetooth devices', e);
+    } finally {
+      setLoadingBt(false);
+    }
+  };
+
+  const handleOpenBluetoothSettings = async () => {
+    try {
+      await api.openBluetoothSettings();
+    } catch (e) {
+      console.error('Failed to open Bluetooth settings', e);
+    }
+  };
+
   return (
     <div className="rounded-3xl bg-dark-900 border border-dark-800 p-5 shadow-2xl relative overflow-hidden transition-all">
       {/* Background Ambient Glow when active */}
@@ -149,169 +177,310 @@ export const WirelessSpeaker: React.FC = () => {
         )}
       </div>
 
-      {/* Main Action Banner */}
-      <div className="mt-5 flex flex-col sm:flex-row items-center justify-between gap-4 p-4 rounded-2xl bg-dark-950 border border-dark-800/80 relative z-10">
-        <div className="flex items-center gap-3.5 w-full sm:w-auto">
-          <button
-            onClick={handleToggleSpeaker}
-            className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 border transition-all active:scale-95 shadow-xl ${
-              isActive
-                ? 'bg-brand-primary text-dark-950 border-brand-primary/80 shadow-brand-primary/30 ring-4 ring-brand-primary/20'
-                : 'bg-dark-900 text-slate-400 hover:text-white border-dark-700 hover:border-dark-600'
-            }`}
-          >
-            {isActive ? <Volume2 className="w-7 h-7 animate-bounce" /> : <VolumeX className="w-7 h-7" />}
-          </button>
-          <div>
-            <span className="text-xs font-bold text-white block">
-              {isActive ? 'Phone Acting as Laptop Speaker' : 'Use Phone as Wireless Speaker'}
-            </span>
-            <span className="text-[11px] text-slate-400 mt-0.5 block">
-              {isActive ? 'Laptop audio playing via phone speakers / earphones' : 'Tap power button to connect audio stream'}
-            </span>
-          </div>
-        </div>
-
+      {/* Audio Technology Switcher Tabs */}
+      <div className="flex items-center gap-2 mt-4 p-1 rounded-2xl bg-dark-950 border border-dark-800 text-xs relative z-10">
         <button
-          onClick={handleToggleSpeaker}
-          className={`w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold transition-all shadow-md active:scale-95 flex items-center justify-center gap-2 ${
-            isActive
-              ? 'bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 border border-rose-500/40 shadow-rose-500/10'
-              : 'bg-brand-primary text-dark-950 hover:bg-cyan-400 shadow-brand-primary/20'
+          onClick={() => setAudioTab('wifi')}
+          className={`flex-1 py-2 px-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all ${
+            audioTab === 'wifi'
+              ? 'bg-brand-primary text-dark-950 shadow-md shadow-brand-primary/20'
+              : 'text-slate-400 hover:text-white'
           }`}
         >
-          <Radio className={`w-3.5 h-3.5 ${isActive ? 'animate-pulse' : ''}`} />
-          <span>{isActive ? 'Disconnect Speaker' : 'Turn ON Speaker'}</span>
+          <Radio className="w-3.5 h-3.5" />
+          <span>Phone Speaker (Wi-Fi Studio)</span>
+        </button>
+        <button
+          onClick={() => {
+            setAudioTab('bluetooth');
+            fetchBluetoothDevices();
+          }}
+          className={`flex-1 py-2 px-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all ${
+            audioTab === 'bluetooth'
+              ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20'
+              : 'text-slate-400 hover:text-white'
+          }`}
+        >
+          <Bluetooth className="w-3.5 h-3.5" />
+          <span>Bluetooth Devices</span>
         </button>
       </div>
 
-      {/* Live Frequency Audio Visualizer */}
-      {isActive && (
-        <div className="mt-4 p-3.5 rounded-2xl bg-dark-950 border border-dark-800/80 relative z-10">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-              <Sparkles className="w-3 h-3 text-brand-primary" />
-              Live Audio Output Visualizer
-            </span>
-            <span className="text-[10px] font-mono text-emerald-400">48,000 Hz Stereo PCM</span>
-          </div>
-          <div className="flex items-end justify-between gap-1.5 h-12 pt-1 px-1">
-            {frequencies.map((height, idx) => (
-              <div
-                key={idx}
-                className="flex-1 bg-dark-900 rounded-t-sm relative overflow-hidden h-full flex items-end"
+      {audioTab === 'wifi' ? (
+        <>
+          {/* Main Action Banner */}
+          <div className="mt-5 flex flex-col sm:flex-row items-center justify-between gap-4 p-4 rounded-2xl bg-dark-950 border border-dark-800/80 relative z-10">
+            <div className="flex items-center gap-3.5 w-full sm:w-auto">
+              <button
+                onClick={handleToggleSpeaker}
+                className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 border transition-all active:scale-95 shadow-xl ${
+                  isActive
+                    ? 'bg-brand-primary text-dark-950 border-brand-primary/80 shadow-brand-primary/30 ring-4 ring-brand-primary/20'
+                    : 'bg-dark-900 text-slate-400 hover:text-white border-dark-700 hover:border-dark-600'
+                }`}
               >
-                <div
-                  style={{ height: `${Math.max(6, height)}%` }}
-                  className="w-full bg-gradient-to-t from-brand-primary via-emerald-400 to-cyan-300 rounded-t-sm transition-all duration-75"
+                {isActive ? <Volume2 className="w-7 h-7 animate-bounce" /> : <VolumeX className="w-7 h-7" />}
+              </button>
+              <div>
+                <span className="text-xs font-bold text-white block">
+                  {isActive ? 'Phone Acting as Laptop Speaker' : 'Use Phone as Wireless Speaker'}
+                </span>
+                <span className="text-[11px] text-slate-400 mt-0.5 block">
+                  {isActive ? 'Laptop audio playing via phone speakers / earphones' : 'Tap power button to connect audio stream'}
+                </span>
+              </div>
+            </div>
+
+            <button
+              onClick={handleToggleSpeaker}
+              className={`w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold transition-all shadow-md active:scale-95 flex items-center justify-center gap-2 ${
+                isActive
+                  ? 'bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 border border-rose-500/40 shadow-rose-500/10'
+                  : 'bg-brand-primary text-dark-950 hover:bg-cyan-400 shadow-brand-primary/20'
+              }`}
+            >
+              <Radio className={`w-3.5 h-3.5 ${isActive ? 'animate-pulse' : ''}`} />
+              <span>{isActive ? 'Disconnect Speaker' : 'Turn ON Speaker'}</span>
+            </button>
+          </div>
+
+          {/* Live Frequency Audio Visualizer */}
+          {isActive && (
+            <div className="mt-4 p-3.5 rounded-2xl bg-dark-950 border border-dark-800/80 relative z-10">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                  <Sparkles className="w-3 h-3 text-brand-primary" />
+                  Live Audio Output Visualizer
+                </span>
+                <span className="text-[10px] font-mono text-emerald-400 flex items-center gap-1">
+                  <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                  48,000 Hz Lossless PCM • Studio Limiter Active
+                </span>
+              </div>
+              <div className="flex items-end justify-between gap-1.5 h-12 pt-1 px-1">
+                {frequencies.map((height, idx) => (
+                  <div
+                    key={idx}
+                    className="flex-1 bg-dark-900 rounded-t-sm relative overflow-hidden h-full flex items-end"
+                  >
+                    <div
+                      style={{ height: `${Math.max(6, height)}%` }}
+                      className="w-full bg-gradient-to-t from-brand-primary via-emerald-400 to-cyan-300 rounded-t-sm transition-all duration-75"
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Control Strip: Phone Volume Boost & Latency Presets */}
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3 relative z-10">
+            {/* Phone Volume & Boost Slider */}
+            <div className="p-3.5 rounded-2xl bg-dark-950 border border-dark-800 flex flex-col justify-between">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
+                  <Smartphone className="w-3.5 h-3.5 text-brand-primary" />
+                  Phone Speaker Output
+                </span>
+                <span className={`text-[11px] font-mono font-bold ${volume > 1.0 ? 'text-amber-400' : 'text-slate-300'}`}>
+                  {isPhoneMuted ? 'Muted' : `${Math.round(volume * 100)}%${volume > 1.0 ? ' Boost' : ''}`}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleTogglePhoneMute}
+                  className={`p-1.5 rounded-lg border transition-all ${
+                    isPhoneMuted
+                      ? 'bg-rose-500/20 border-rose-500/40 text-rose-400'
+                      : 'bg-dark-900 border-dark-700 text-slate-400 hover:text-white'
+                  }`}
+                  title={isPhoneMuted ? 'Unmute phone' : 'Mute phone'}
+                >
+                  {isPhoneMuted ? <VolumeX className="w-4 h-4" /> : <Volume1 className="w-4 h-4" />}
+                </button>
+
+                <input
+                  type="range"
+                  min="0"
+                  max="1.5"
+                  step="0.05"
+                  value={isPhoneMuted ? 0 : volume}
+                  onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
+                  className="flex-1 h-2 bg-dark-800 rounded-lg appearance-none cursor-pointer accent-brand-primary"
                 />
               </div>
-            ))}
+            </div>
+
+            {/* Latency & Laptop Mute Quick Controls */}
+            <div className="p-3.5 rounded-2xl bg-dark-950 border border-dark-800 flex flex-col justify-between gap-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
+                  <Zap className="w-3.5 h-3.5 text-brand-primary" />
+                  Audio Sync Mode
+                </span>
+                <div className="flex items-center bg-dark-900 p-0.5 rounded-xl border border-dark-800 text-[10px] font-medium">
+                  <button
+                    onClick={() => handleToggleLatency('ultra')}
+                    className={`px-2 py-1 rounded-lg flex items-center gap-1 transition-all ${
+                      latencyPreset === 'ultra'
+                        ? 'bg-brand-primary text-dark-950 font-bold'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                    title="Ultra-low latency (~50ms) for games and instant response"
+                  >
+                    <Zap className="w-3 h-3" />
+                    <span>Ultra (50ms)</span>
+                  </button>
+                  <button
+                    onClick={() => handleToggleLatency('movie')}
+                    className={`px-2 py-1 rounded-lg flex items-center gap-1 transition-all ${
+                      latencyPreset === 'movie'
+                        ? 'bg-brand-primary text-dark-950 font-bold'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                    title="Balanced sync (~80ms) for YouTube & movies"
+                  >
+                    <Tv className="w-3 h-3" />
+                    <span>Movie</span>
+                  </button>
+                  <button
+                    onClick={() => handleToggleLatency('music')}
+                    className={`px-2 py-1 rounded-lg flex items-center gap-1 transition-all ${
+                      latencyPreset === 'music'
+                        ? 'bg-brand-primary text-dark-950 font-bold'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                    title="Rock-solid jitter buffer (~140ms) for music & weak Wi-Fi"
+                  >
+                    <Music className="w-3 h-3" />
+                    <span>Music</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Mute Physical Laptop Speakers */}
+              <div className="flex items-center justify-between pt-1 border-t border-dark-800/60">
+                <span className="text-[11px] text-slate-400 flex items-center gap-1.5">
+                  <Laptop className="w-3.5 h-3.5 text-slate-500" />
+                  Laptop Speakers
+                </span>
+                <button
+                  onClick={handleMuteLaptopSpeakers}
+                  className="text-[10px] font-semibold px-2.5 py-1 rounded-lg bg-dark-900 hover:bg-dark-800 border border-dark-800 text-slate-300 hover:text-white transition-all active:scale-95"
+                >
+                  Toggle Laptop Mute
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
-      )}
-
-      {/* Control Strip: Phone Volume Boost & Latency Presets */}
-      <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3 relative z-10">
-        {/* Phone Volume & Boost Slider */}
-        <div className="p-3.5 rounded-2xl bg-dark-950 border border-dark-800 flex flex-col justify-between">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
-              <Smartphone className="w-3.5 h-3.5 text-brand-primary" />
-              Phone Speaker Output
-            </span>
-            <span className={`text-[11px] font-mono font-bold ${volume > 1.0 ? 'text-amber-400' : 'text-slate-300'}`}>
-              {isPhoneMuted ? 'Muted' : `${Math.round(volume * 100)}%${volume > 1.0 ? ' Boost' : ''}`}
-            </span>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button
-              onClick={handleTogglePhoneMute}
-              className={`p-1.5 rounded-lg border transition-all ${
-                isPhoneMuted
-                  ? 'bg-rose-500/20 border-rose-500/40 text-rose-400'
-                  : 'bg-dark-900 border-dark-700 text-slate-400 hover:text-white'
-              }`}
-              title={isPhoneMuted ? 'Unmute phone' : 'Mute phone'}
-            >
-              {isPhoneMuted ? <VolumeX className="w-4 h-4" /> : <Volume1 className="w-4 h-4" />}
-            </button>
-
-            <input
-              type="range"
-              min="0"
-              max="1.5"
-              step="0.05"
-              value={isPhoneMuted ? 0 : volume}
-              onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
-              className="flex-1 h-2 bg-dark-800 rounded-lg appearance-none cursor-pointer accent-brand-primary"
-            />
-          </div>
-        </div>
-
-        {/* Latency & Laptop Mute Quick Controls */}
-        <div className="p-3.5 rounded-2xl bg-dark-950 border border-dark-800 flex flex-col justify-between gap-2.5">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
-              <Zap className="w-3.5 h-3.5 text-brand-primary" />
-              Audio Sync Mode
-            </span>
-            <div className="flex items-center bg-dark-900 p-0.5 rounded-xl border border-dark-800 text-[10px] font-medium">
+        </>
+      ) : (
+        /* Bluetooth Devices View */
+        <div className="mt-4 space-y-3 relative z-10 animate-fadeIn">
+          {/* Bluetooth Action Bar */}
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-4 rounded-2xl bg-dark-950 border border-blue-500/20">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/30">
+                <Bluetooth className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="text-xs font-bold text-white">Direct Bluetooth Audio</h4>
+                <p className="text-[11px] text-slate-400">Connect laptop directly to Bluetooth speakers, earbuds, or phones</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 w-full sm:w-auto">
               <button
-                onClick={() => handleToggleLatency('ultra')}
-                className={`px-2 py-1 rounded-lg flex items-center gap-1 transition-all ${
-                  latencyPreset === 'ultra'
-                    ? 'bg-brand-primary text-dark-950 font-bold'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-                title="Ultra-low latency (~50ms) for games and instant response"
+                onClick={fetchBluetoothDevices}
+                disabled={loadingBt}
+                className="px-3 py-2 rounded-xl bg-dark-900 hover:bg-dark-800 border border-dark-800 text-slate-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition-all"
               >
-                <Zap className="w-3 h-3" />
-                <span>Ultra (50ms)</span>
+                <RefreshCw className={`w-3.5 h-3.5 ${loadingBt ? 'animate-spin' : ''}`} />
+                <span>Refresh</span>
               </button>
               <button
-                onClick={() => handleToggleLatency('movie')}
-                className={`px-2 py-1 rounded-lg flex items-center gap-1 transition-all ${
-                  latencyPreset === 'movie'
-                    ? 'bg-brand-primary text-dark-950 font-bold'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-                title="Balanced sync (~80ms) for YouTube & movies"
+                onClick={handleOpenBluetoothSettings}
+                className="flex-1 sm:flex-none px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-all shadow-lg shadow-blue-500/20"
               >
-                <Tv className="w-3 h-3" />
-                <span>Movie</span>
-              </button>
-              <button
-                onClick={() => handleToggleLatency('music')}
-                className={`px-2 py-1 rounded-lg flex items-center gap-1 transition-all ${
-                  latencyPreset === 'music'
-                    ? 'bg-brand-primary text-dark-950 font-bold'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-                title="Rock-solid jitter buffer (~140ms) for music & weak Wi-Fi"
-              >
-                <Music className="w-3 h-3" />
-                <span>Music</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Open PC Bluetooth</span>
               </button>
             </div>
           </div>
 
-          {/* Mute Physical Laptop Speakers */}
-          <div className="flex items-center justify-between pt-1 border-t border-dark-800/60">
-            <span className="text-[11px] text-slate-400 flex items-center gap-1.5">
-              <Laptop className="w-3.5 h-3.5 text-slate-500" />
-              Laptop Speakers
-            </span>
-            <button
-              onClick={handleMuteLaptopSpeakers}
-              className="text-[10px] font-semibold px-2.5 py-1 rounded-lg bg-dark-900 hover:bg-dark-800 border border-dark-800 text-slate-300 hover:text-white transition-all active:scale-95"
-            >
-              Toggle Laptop Mute
-            </button>
+          {/* Paired Bluetooth Audio Devices List */}
+          <div className="p-4 rounded-2xl bg-dark-950 border border-dark-800">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-[11px] font-bold text-slate-300 flex items-center gap-1.5">
+                <Headphones className="w-3.5 h-3.5 text-blue-400" />
+                Paired Audio Devices & Speakers on Laptop
+              </span>
+              <span className="text-[10px] font-mono text-slate-500">{bluetoothDevices.length} devices detected</span>
+            </div>
+
+            {loadingBt ? (
+              <div className="py-6 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                <RefreshCw className="w-4 h-4 animate-spin text-brand-primary" />
+                <span>Scanning Bluetooth audio devices...</span>
+              </div>
+            ) : bluetoothDevices.length > 0 ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {bluetoothDevices.map((dev, idx) => (
+                  <div
+                    key={idx}
+                    className="p-3 rounded-xl bg-dark-900/80 border border-dark-800 hover:border-dark-700 flex items-center justify-between transition-all"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="p-2 rounded-lg bg-dark-950 text-blue-400 border border-dark-800">
+                        <Headphones className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <span className="text-xs font-semibold text-white block truncate">{dev.name}</span>
+                        <span className="text-[10px] text-slate-400 block font-mono">
+                          {dev.connected ? 'Connected / Active' : 'Paired'}
+                        </span>
+                      </div>
+                    </div>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider ${
+                        dev.connected
+                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                          : 'bg-dark-950 text-slate-400 border border-dark-800'
+                      }`}
+                    >
+                      {dev.connected ? 'Active' : 'Paired'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="py-6 text-center">
+                <p className="text-xs text-slate-400">No Bluetooth audio devices detected yet.</p>
+                <button
+                  onClick={handleOpenBluetoothSettings}
+                  className="mt-2 text-xs font-bold text-blue-400 hover:underline inline-flex items-center gap-1"
+                >
+                  Pair a Bluetooth device in Windows Settings <ExternalLink className="w-3 h-3" />
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Sound Quality Comparison Card */}
+          <div className="p-3.5 rounded-2xl bg-dark-950/60 border border-dark-800/80 text-xs text-slate-400 space-y-2">
+            <div className="flex items-center gap-1.5 text-slate-300 font-semibold text-[11px]">
+              <ShieldCheck className="w-3.5 h-3.5 text-brand-primary" />
+              <span>Which gives the best sound output?</span>
+            </div>
+            <p className="text-[11px] leading-relaxed">
+              <strong className="text-white">Phone Wi-Fi Mode (Lossless HD)</strong>: Delivers full bit-perfect <strong className="text-brand-primary">48,000 Hz 16-bit Studio PCM</strong> (1,536 kbps) with zero audio compression and real-time ~50ms ultra-low latency. Use this to turn your phone into a high-fidelity wireless speaker.
+            </p>
+            <p className="text-[11px] leading-relaxed">
+              <strong className="text-white">Bluetooth Mode</strong>: Direct hardware connection from Windows to external Bluetooth speakers or earbuds (`Xiaomi Sound`, `Boult Audio`, `AirBass`).
+            </p>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };

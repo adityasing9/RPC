@@ -14,6 +14,8 @@ export class AudioStreamClient {
   private audioCtx: AudioContext | null = null;
   private processor: ScriptProcessorNode | null = null;
   private gainNode: GainNode | null = null;
+  private compressorNode: DynamicsCompressorNode | null = null;
+  private keepAliveSource: AudioBufferSourceNode | null = null;
   private analyserNode: AnalyserNode | null = null;
   private wakeLock: any = null;
 
@@ -164,13 +166,33 @@ export class AudioStreamClient {
       this.integralErr = 0.0;
       this.softGain = 0.0;
 
-      // 3. Audio Processing Pipeline: ScriptProcessor -> GainNode -> AnalyserNode -> Destination
+      // 3. Audio Processing Pipeline: ScriptProcessor -> GainNode -> Compressor -> Analyser -> Destination
       // 1024 frame buffer for swift responsiveness
       const bufferSize = 1024;
-      this.processor = this.audioCtx.createScriptProcessor(bufferSize, 0, 2);
+      this.processor = this.audioCtx.createScriptProcessor(bufferSize, 1, 2);
+
+      // Keep-alive silent driver so mobile browsers never deprioritize or sleep onaudioprocess
+      try {
+        const silentBuffer = this.audioCtx.createBuffer(1, 1024, this.deviceSampleRate);
+        this.keepAliveSource = this.audioCtx.createBufferSource();
+        this.keepAliveSource.buffer = silentBuffer;
+        this.keepAliveSource.loop = true;
+        this.keepAliveSource.connect(this.processor);
+        this.keepAliveSource.start();
+      } catch {
+        // ignore fallback
+      }
 
       this.gainNode = this.audioCtx.createGain();
       this.gainNode.gain.value = this.isPhoneMutedState ? 0 : this.volume;
+
+      // Studio Mastering Limiter: Prevents clipping distortion & enhances punch at all volume levels
+      this.compressorNode = this.audioCtx.createDynamicsCompressor();
+      this.compressorNode.threshold.value = -1.0;
+      this.compressorNode.knee.value = 6.0;
+      this.compressorNode.ratio.value = 12.0;
+      this.compressorNode.attack.value = 0.003;
+      this.compressorNode.release.value = 0.12;
 
       this.analyserNode = this.audioCtx.createAnalyser();
       this.analyserNode.fftSize = 64;
@@ -268,9 +290,10 @@ export class AudioStreamClient {
         }
       };
 
-      // Connect DSP chain
+      // Connect DSP chain: Processor -> Gain -> Compressor -> Analyser -> Destination
       this.processor.connect(this.gainNode);
-      this.gainNode.connect(this.analyserNode);
+      this.gainNode.connect(this.compressorNode);
+      this.compressorNode.connect(this.analyserNode);
       this.analyserNode.connect(this.audioCtx.destination);
 
       // Mobile Safari keepalive audio source
@@ -364,6 +387,15 @@ export class AudioStreamClient {
       this.ws.close();
       this.ws = null;
     }
+    if (this.keepAliveSource) {
+      try {
+        this.keepAliveSource.stop();
+        this.keepAliveSource.disconnect();
+      } catch {
+        // ignore
+      }
+      this.keepAliveSource = null;
+    }
     if (this.processor) {
       this.processor.disconnect();
       this.processor.onaudioprocess = null;
@@ -372,6 +404,10 @@ export class AudioStreamClient {
     if (this.gainNode) {
       this.gainNode.disconnect();
       this.gainNode = null;
+    }
+    if (this.compressorNode) {
+      this.compressorNode.disconnect();
+      this.compressorNode = null;
     }
     if (this.analyserNode) {
       this.analyserNode.disconnect();

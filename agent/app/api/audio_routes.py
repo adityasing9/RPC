@@ -188,3 +188,47 @@ async def audio_stream_websocket(
     finally:
         audio_manager.unsubscribe(queue)
         logger.info(f"Audio WebSocket disconnected for {device.device_name}")
+
+@router.get("/bluetooth/devices")
+async def get_bluetooth_audio_devices(current_device: PairedDevice = Depends(get_current_device)):
+    """Return paired Bluetooth audio speakers, earbuds, and devices on this Windows PC."""
+    import subprocess
+    try:
+        res = subprocess.run(
+            ['powershell', '-Command', 'Get-PnpDevice -Class Bluetooth | Select-Object -Property FriendlyName, Status, Present | ConvertTo-Json'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        data = json.loads(res.stdout) if res.stdout else []
+        if not isinstance(data, list):
+            data = [data]
+        audio_keywords = ['speaker', 'earbud', 'airbass', 'headphone', 'audio', 'sound', 'toad', 'buds', 'm51', 'neo']
+        seen = set()
+        devices = []
+        for d in data:
+            name = d.get('FriendlyName', '')
+            lower = name.lower()
+            if any(k in lower for k in audio_keywords) and not lower.endswith('avrcp transport') and not lower.endswith('service'):
+                if name not in seen:
+                    seen.add(name)
+                    devices.append({
+                        "name": name,
+                        "status": d.get("Status", "OK"),
+                        "connected": d.get("Present", False)
+                    })
+        return {"success": True, "devices": devices}
+    except Exception as e:
+        logger.error(f"Failed to query Bluetooth audio devices: {e}")
+        return {"success": False, "devices": [], "error": str(e)}
+
+@router.post("/bluetooth/open-settings")
+async def open_bluetooth_settings(current_device: PairedDevice = Depends(get_current_device)):
+    """Open Windows Bluetooth Settings on the PC for instant pairing."""
+    import subprocess
+    try:
+        subprocess.Popen(["cmd", "/c", "start", "ms-settings:bluetooth"])
+        return {"success": True, "message": "Windows Bluetooth settings opened"}
+    except Exception as e:
+        logger.error(f"Failed to open Bluetooth settings: {e}")
+        return {"success": False, "error": str(e)}

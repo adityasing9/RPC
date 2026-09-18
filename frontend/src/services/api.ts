@@ -354,6 +354,25 @@ class ApiService {
     });
     return res.data.data?.entries || [];
   }
+
+  // Bluetooth Audio Management
+  async getBluetoothAudioDevices(): Promise<{ name: string; status: string; connected: boolean }[]> {
+    try {
+      const res = await this.client.get('/audio/bluetooth/devices');
+      return res.data.devices || [];
+    } catch {
+      return [];
+    }
+  }
+
+  async openBluetoothSettings(): Promise<boolean> {
+    try {
+      const res = await this.client.post('/audio/bluetooth/open-settings');
+      return !!res.data?.success;
+    } catch {
+      return false;
+    }
+  }
 }
 
 export const api = new ApiService();
