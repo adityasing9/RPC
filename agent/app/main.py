@@ -39,6 +39,7 @@ from app.api.input_routes import router as input_router
 from app.api.screenshot_routes import router as screenshot_router
 from app.api.activity_routes import router as activity_router
 from app.api.websocket_routes import router as websocket_router
+from app.api.audio_routes import router as audio_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -99,6 +100,7 @@ def create_app() -> FastAPI:
     app.include_router(screenshot_router)
     app.include_router(activity_router)
     app.include_router(websocket_router)
+    app.include_router(audio_router)
 
     @app.middleware("http")
     async def add_private_network_headers(request: Request, call_next):

@@ -17,10 +17,13 @@ import {
   Monitor,
   Radio,
   Layers,
-  Touchpad as TouchpadIcon
+  Touchpad as TouchpadIcon,
+  Volume2,
+  VolumeX
 } from 'lucide-react';
 import { api } from '../../services/api';
 import { wsService } from '../../services/websocket';
+import { AudioStreamClient } from '../../services/audioStream';
 
 interface ClickRipple {
   id: number;
@@ -48,6 +51,10 @@ export const Touchpad: React.FC = () => {
   const [streamError, setStreamError] = useState<boolean>(false);
   const [screenInfo, setScreenInfo] = useState<{ width: number; height: number } | null>(null);
 
+  // Live Audio Stream State (Default Stage Muted)
+  const [isAudioActive, setIsAudioActive] = useState<boolean>(false);
+  const audioClientRef = useRef<AudioStreamClient | null>(null);
+
   // Fullscreen Remote Desktop
   const [fullScreen, setFullScreen] = useState<boolean>(false);
   const [ripples, setRipples] = useState<ClickRipple[]>([]);
@@ -58,6 +65,23 @@ export const Touchpad: React.FC = () => {
   const scrollLastY = useRef<number | null>(null);
   const screenImgRef = useRef<HTMLImageElement>(null);
   const fullscreenImgRef = useRef<HTMLImageElement>(null);
+
+  // Initialize Audio Stream Client (Clean unmount)
+  useEffect(() => {
+    const client = new AudioStreamClient((active) => {
+      setIsAudioActive(active);
+    });
+    audioClientRef.current = client;
+
+    return () => {
+      client.stop();
+    };
+  }, []);
+
+  const toggleAudio = () => {
+    if (!audioClientRef.current) return;
+    audioClientRef.current.toggle();
+  };
 
   // Fetch screen resolution on mount
   useEffect(() => {
@@ -355,6 +379,20 @@ export const Touchpad: React.FC = () => {
             {isLiveActive ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
           </button>
 
+          {/* PC Audio Stream Toggle (Default Muted) */}
+          <button
+            onClick={toggleAudio}
+            title={isAudioActive ? 'Mute PC Audio' : 'Unmute PC Audio (Listen to PC Sound)'}
+            className={`px-2 py-1 rounded-xl text-[10px] font-bold border flex items-center gap-1 transition-all ${
+              isAudioActive
+                ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40 shadow-sm shadow-emerald-500/20'
+                : 'bg-dark-950 text-slate-400 border-dark-700 hover:text-slate-200'
+            }`}
+          >
+            {isAudioActive ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+            <span className="hidden xs:inline">{isAudioActive ? 'Audio ON' : 'Muted'}</span>
+          </button>
+
           {/* Fullscreen Button */}
           <button
             onClick={() => setFullScreen(true)}
@@ -616,6 +654,17 @@ export const Touchpad: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2 pointer-events-auto">
+              <button
+                onClick={toggleAudio}
+                title={isAudioActive ? 'Mute PC Audio' : 'Unmute PC Audio'}
+                className={`p-2.5 rounded-2xl backdrop-blur-md border transition-all ${
+                  isAudioActive
+                    ? 'bg-emerald-500/30 border-emerald-500/50 text-emerald-300 shadow-lg shadow-emerald-500/20 animate-pulse'
+                    : 'bg-dark-950/80 border-white/10 text-white hover:bg-white/10'
+                }`}
+              >
+                {isAudioActive ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+              </button>
               <button
                 onClick={() => setShowKeyboard(!showKeyboard)}
                 className="p-2.5 rounded-2xl bg-dark-950/80 backdrop-blur-md border border-white/10 text-white hover:bg-white/10"

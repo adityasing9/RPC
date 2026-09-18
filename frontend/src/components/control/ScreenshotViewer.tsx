@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Camera, RefreshCw, Maximize2, X, Download, Play, Pause, Radio, MousePointer, Monitor, ExternalLink } from 'lucide-react';
+import { Camera, RefreshCw, Maximize2, X, Download, Play, Pause, Radio, MousePointer, Monitor, ExternalLink, Volume2, VolumeX } from 'lucide-react';
 import { api } from '../../services/api';
 import { useApp } from '../../context/AppContext';
+import { AudioStreamClient } from '../../services/audioStream';
 
 interface ClickRipple {
   id: number;
@@ -34,6 +35,27 @@ export const ScreenshotViewer: React.FC = () => {
   const [ripples, setRipples] = useState<ClickRipple[]>([]);
   const imageRef = useRef<HTMLImageElement>(null);
   const fullscreenImageRef = useRef<HTMLImageElement>(null);
+
+  // Live Audio Stream State (Default Stage Muted)
+  const [isAudioActive, setIsAudioActive] = useState<boolean>(false);
+  const audioClientRef = useRef<AudioStreamClient | null>(null);
+
+  // Initialize Audio Stream Client
+  useEffect(() => {
+    const client = new AudioStreamClient((active) => {
+      setIsAudioActive(active);
+    });
+    audioClientRef.current = client;
+
+    return () => {
+      client.stop();
+    };
+  }, []);
+
+  const toggleAudio = () => {
+    if (!audioClientRef.current) return;
+    audioClientRef.current.toggle();
+  };
 
   // Load screen metrics on mount
   useEffect(() => {
@@ -291,6 +313,20 @@ export const ScreenshotViewer: React.FC = () => {
                 )}
               </button>
 
+              {/* Live PC Audio Stream (Default Muted) */}
+              <button
+                onClick={toggleAudio}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition-all ${
+                  isAudioActive
+                    ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400 shadow-sm shadow-emerald-500/20'
+                    : 'bg-dark-950 border-dark-800 text-slate-400 hover:text-white'
+                }`}
+                title={isAudioActive ? 'Mute PC Audio' : 'Unmute PC Audio (Listen to PC Sound)'}
+              >
+                {isAudioActive ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+                <span>{isAudioActive ? 'Sound: ON' : 'Sound: Muted'}</span>
+              </button>
+
               {/* FPS Selector */}
               <div className="flex items-center bg-dark-950 p-1 rounded-xl border border-dark-800 text-[11px]">
                 {[5, 10, 15, 20].map((f) => (
@@ -411,6 +447,17 @@ export const ScreenshotViewer: React.FC = () => {
                   Right Click
                 </button>
               )}
+              <button
+                onClick={toggleAudio}
+                className={`p-2 rounded-xl border transition-all ${
+                  isAudioActive
+                    ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400'
+                    : 'bg-dark-900 border-dark-800 text-slate-400 hover:text-white'
+                }`}
+                title={isAudioActive ? 'Mute PC Audio' : 'Unmute PC Audio'}
+              >
+                {isAudioActive ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+              </button>
               <button
                 onClick={() => setFullScreen(false)}
                 className="p-2 text-slate-400 hover:text-white rounded-xl bg-dark-900 border border-dark-800"
