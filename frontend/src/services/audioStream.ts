@@ -110,6 +110,7 @@ export class AudioStreamClient {
   public setLatencyPreset(mode: LatencyPreset): void {
     this.latencyPreset = mode;
     this.integralErr = 0;
+    this.applyReceiverJitterBuffer();
   }
 
   public getStreamingEngine(): StreamingEngine {
@@ -287,6 +288,12 @@ export class AudioStreamClient {
           console.warn('Could not attach visualizer to MediaStream:', visErr);
         }
       }
+
+      // Optimize NetEQ jitter buffer for butter-smooth audio
+      if (event.receiver) {
+        this.applyReceiverJitterBuffer(event.receiver);
+      }
+
       this.isRunning = true;
       this.isPlaying = true;
       this.onStateChangeCallback?.(true);
@@ -343,6 +350,29 @@ export class AudioStreamClient {
         this.stop('WebRTC disconnected');
       }
     };
+  }
+
+  private applyReceiverJitterBuffer(receiver?: RTCRtpReceiver): void {
+    const rx = receiver || this.pc?.getReceivers().find((r) => r.track?.kind === 'audio');
+    if (!rx) return;
+
+    let targetMs = 80;
+    if (this.latencyPreset === 'ultra') targetMs = 45;
+    else if (this.latencyPreset === 'music') targetMs = 130;
+
+    // 1. W3C jitterBufferTarget (Chromium 120+)
+    if ('jitterBufferTarget' in rx) {
+      try {
+        (rx as any).jitterBufferTarget = targetMs;
+      } catch {}
+    }
+
+    // 2. playoutDelayHint (Chromium 75+)
+    if ('playoutDelayHint' in rx) {
+      try {
+        (rx as any).playoutDelayHint = targetMs / 1000.0;
+      } catch {}
+    }
   }
 
   private async startWebSocketStream(token: string): Promise<void> {
