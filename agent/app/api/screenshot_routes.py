@@ -114,9 +114,8 @@ def draw_mouse_cursor(image: Image.Image, cx: int, cy: int):
     except Exception:
         pass
 
-def grab_screen_frame(max_width: int = 1280, quality: int = 60) -> bytes:
+def grab_screen_frame(max_width: int = 1024, quality: int = 50) -> bytes:
     """Capture desktop, render mouse cursor, and return optimized JPEG bytes."""
-    make_dpi_aware()
     attach_input_desktop()
     cursor_pos = get_cursor_pos()
     w_metric, h_metric = get_screen_metrics()
@@ -130,31 +129,30 @@ def grab_screen_frame(max_width: int = 1280, quality: int = 60) -> bytes:
         draw = ImageDraw.Draw(img)
         draw.text((30, 30), "Screen Inactive / Desktop Locked", fill=(148, 163, 184))
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=50)
+        img.save(buf, format="JPEG", quality=40)
         return buf.getvalue()
 
     # Calculate normalized percentage of cursor across the original screen
+    # cursor_pos is strictly in (w_metric, h_metric) coordinate space
     norm_x, norm_y = None, None
     if cursor_pos and w_metric > 0 and h_metric > 0:
-        span_w = max(screenshot.width, w_metric)
-        span_h = max(screenshot.height, h_metric)
-        norm_x = max(0.0, min(1.0, cursor_pos[0] / float(span_w)))
-        norm_y = max(0.0, min(1.0, cursor_pos[1] / float(span_h)))
+        norm_x = max(0.0, min(1.0, cursor_pos[0] / float(w_metric)))
+        norm_y = max(0.0, min(1.0, cursor_pos[1] / float(h_metric)))
 
-    # If resizing, scale down first then draw razor-sharp cursor on top
+    # Fast resize if wider than max_width
     if screenshot.width > max_width:
         ratio = max_width / screenshot.width
         new_size = (max_width, int(screenshot.height * ratio))
-        screenshot = screenshot.resize(new_size, Image.BILINEAR)
+        screenshot = screenshot.resize(new_size, Image.BOX)
 
-    # Project cursor onto final scaled frame
+    # Project cursor onto final scaled frame with exact pixel coordinates
     if norm_x is not None and norm_y is not None:
         cx = int(round(norm_x * (screenshot.width - 1)))
         cy = int(round(norm_y * (screenshot.height - 1)))
         draw_mouse_cursor(screenshot, cx, cy)
 
     buffer = io.BytesIO()
-    screenshot.save(buffer, format="JPEG", quality=max(15, min(quality, 95)))
+    screenshot.save(buffer, format="JPEG", quality=max(15, min(quality, 85)))
     return buffer.getvalue()
 
 async def resolve_device_or_query_token(
@@ -194,8 +192,8 @@ async def get_screen_info(current_device: PairedDevice = Depends(resolve_device_
         "width": w,
         "height": h,
         "aspect_ratio": round(w / max(1, h), 3),
-        "supported_fps": [5, 10, 15, 20, 30],
-        "default_fps": 30,
+        "supported_fps": [5, 10, 15, 20],
+        "default_fps": 10,
     }
 
 @router.get("/capture")
@@ -217,15 +215,15 @@ async def capture_screen(
 
 @router.get("/stream")
 async def stream_screen(
-    fps: int = 30,
-    quality: int = 60,
-    width: int = 1280,
+    fps: int = 10,
+    quality: int = 50,
+    width: int = 1024,
     current_device: PairedDevice = Depends(resolve_device_or_query_token)
 ):
     """Continuous high-performance MJPEG live screen preview stream."""
-    safe_fps = max(1, min(fps, 30))
-    safe_quality = max(20, min(quality, 85))
-    safe_width = max(480, min(width, 1920))
+    safe_fps = max(1, min(fps, 20))
+    safe_quality = max(20, min(quality, 80))
+    safe_width = max(480, min(width, 1280))
     target_frame_time = 1.0 / safe_fps
 
     async def frame_generator():

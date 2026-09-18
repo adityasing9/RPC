@@ -17,8 +17,8 @@ export const ScreenshotViewer: React.FC = () => {
   
   // Live Stream State
   const [isLiveActive, setIsLiveActive] = useState<boolean>(true);
-  const [fps, setFps] = useState<number>(30);
-  const [quality, setQuality] = useState<number>(60);
+  const [fps, setFps] = useState<number>(10);
+  const [quality, setQuality] = useState<number>(50);
   const [streamKey, setStreamKey] = useState<number>(Date.now());
   const [streamError, setStreamError] = useState<boolean>(false);
   const [screenInfo, setScreenInfo] = useState<{ width: number; height: number } | null>(null);
@@ -47,7 +47,7 @@ export const ScreenshotViewer: React.FC = () => {
   }, []);
 
   // Compute live stream URL
-  const streamUrl = api.getScreenStreamUrl(fps, quality, 1280) + `&_k=${streamKey}`;
+  const streamUrl = api.getScreenStreamUrl(fps, quality, 1024) + `&_k=${streamKey}`;
 
   const toggleLive = () => {
     if (!isLiveActive) {
@@ -293,7 +293,7 @@ export const ScreenshotViewer: React.FC = () => {
 
               {/* FPS Selector */}
               <div className="flex items-center bg-dark-950 p-1 rounded-xl border border-dark-800 text-[11px]">
-                {[5, 10, 15, 20, 30].map((f) => (
+                {[5, 10, 15, 20].map((f) => (
                   <button
                     key={f}
                     onClick={() => {
@@ -313,22 +313,22 @@ export const ScreenshotViewer: React.FC = () => {
               <div className="flex items-center bg-dark-950 p-1 rounded-xl border border-dark-800 text-[11px]">
                 <button
                   onClick={() => {
-                    setQuality(45);
+                    setQuality(40);
                     setStreamKey(Date.now());
                   }}
                   className={`px-2 py-1 rounded-lg font-semibold transition-all ${
-                    quality <= 50 ? 'bg-brand-primary text-dark-950' : 'text-slate-400 hover:text-white'
+                    quality <= 45 ? 'bg-brand-primary text-dark-950' : 'text-slate-400 hover:text-white'
                   }`}
                 >
                   Eco
                 </button>
                 <button
                   onClick={() => {
-                    setQuality(70);
+                    setQuality(65);
                     setStreamKey(Date.now());
                   }}
                   className={`px-2 py-1 rounded-lg font-semibold transition-all ${
-                    quality > 50 ? 'bg-brand-primary text-dark-950' : 'text-slate-400 hover:text-white'
+                    quality > 45 ? 'bg-brand-primary text-dark-950' : 'text-slate-400 hover:text-white'
                   }`}
                 >
                   HD
