@@ -28,6 +28,8 @@ export const WirelessSpeaker: React.FC = () => {
   const [isPhoneMuted, setIsPhoneMuted] = useState<boolean>(sharedAudioClient.isMuted());
   const [latencyPreset, setLatencyPreset] = useState<LatencyPreset>(sharedAudioClient.getLatencyPreset());
   const [streamingEngine, setStreamingEngine] = useState<'webrtc' | 'websocket'>(sharedAudioClient.getStreamingEngine());
+  const [connecting, setConnecting] = useState<boolean>(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLaptopMuted, setIsLaptopMuted] = useState<boolean>(false);
   const [frequencies, setFrequencies] = useState<number[]>(new Array(16).fill(0));
   const [bluetoothDevices, setBluetoothDevices] = useState<{ name: string; status: string; connected: boolean }[]>([]);
@@ -38,6 +40,16 @@ export const WirelessSpeaker: React.FC = () => {
 
   // Sync state with audio client
   useEffect(() => {
+    sharedAudioClient.setOnStateChange((active, err) => {
+      setIsActive(active);
+      setConnecting(false);
+      if (err) {
+        setErrorMessage(err);
+      } else if (active) {
+        setErrorMessage(null);
+      }
+    });
+
     const checkState = () => {
       setIsActive(sharedAudioClient.isActive());
       setVolume(sharedAudioClient.getVolume());
@@ -77,12 +89,16 @@ export const WirelessSpeaker: React.FC = () => {
   }, [isActive]);
 
   const handleToggleSpeaker = async () => {
+    setErrorMessage(null);
     if (isActive) {
       sharedAudioClient.stop();
       setIsActive(false);
+      setConnecting(false);
     } else {
+      setConnecting(true);
       await sharedAudioClient.start();
       setIsActive(sharedAudioClient.isActive());
+      setConnecting(false);
     }
   };
 
@@ -102,6 +118,7 @@ export const WirelessSpeaker: React.FC = () => {
   };
 
   const handleToggleEngine = (eng: 'webrtc' | 'websocket') => {
+    setErrorMessage(null);
     setStreamingEngine(eng);
     sharedAudioClient.setStreamingEngine(eng);
   };
@@ -240,16 +257,41 @@ export const WirelessSpeaker: React.FC = () => {
 
             <button
               onClick={handleToggleSpeaker}
+              disabled={connecting}
               className={`w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold transition-all shadow-md active:scale-95 flex items-center justify-center gap-2 ${
-                isActive
+                connecting
+                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 cursor-wait'
+                  : isActive
                   ? 'bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 border border-rose-500/40 shadow-rose-500/10'
                   : 'bg-brand-primary text-dark-950 hover:bg-cyan-400 shadow-brand-primary/20'
               }`}
             >
-              <Radio className={`w-3.5 h-3.5 ${isActive ? 'animate-pulse' : ''}`} />
-              <span>{isActive ? 'Disconnect Speaker' : 'Turn ON Speaker'}</span>
+              <Radio className={`w-3.5 h-3.5 ${connecting || isActive ? 'animate-pulse' : ''}`} />
+              <span>
+                {connecting
+                  ? (streamingEngine === 'webrtc' ? 'Connecting WebRTC...' : 'Connecting Stream...')
+                  : isActive
+                  ? 'Disconnect Speaker'
+                  : 'Turn ON Speaker'}
+              </span>
             </button>
           </div>
+
+          {/* Connection Error Notification */}
+          {errorMessage && (
+            <div className="mt-3 p-3 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-between text-xs text-rose-300 relative z-10 animate-fadeIn">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
+                <span>{errorMessage}</span>
+              </div>
+              <button
+                onClick={() => setErrorMessage(null)}
+                className="text-[10px] uppercase font-bold text-rose-400 hover:text-white px-2 py-0.5 rounded-lg bg-rose-500/20"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
 
           {/* Live Frequency Audio Visualizer */}
           {isActive && (

@@ -375,7 +375,36 @@ class ApiService {
   }
 
   // WebRTC Audio Streaming
-  async sendWebRtcOffer(sdp: string, type: string = 'offer'): Promise<{ sdp: string; type: string } | null> {
+  async requestWebRtcOffer(): Promise<{ sessionId: string; sdp: string; type: string } | null> {
+    try {
+      const res = await this.client.post('/audio/webrtc/request-offer');
+      return res.data;
+    } catch (e) {
+      console.error('Failed to request WebRTC offer from PC agent:', e);
+      return null;
+    }
+  }
+
+  async sendWebRtcAnswer(sessionId: string, sdp: string, type: string = 'answer'): Promise<boolean> {
+    try {
+      const res = await this.client.post('/audio/webrtc/answer', { sessionId, sdp, type });
+      return !!res.data?.success;
+    } catch (e) {
+      console.error('Failed to send WebRTC answer to PC agent:', e);
+      return false;
+    }
+  }
+
+  async stopWebRtcSession(sessionId: string): Promise<boolean> {
+    try {
+      const res = await this.client.post('/audio/webrtc/stop', { sessionId });
+      return !!res.data?.success;
+    } catch {
+      return false;
+    }
+  }
+
+  async sendWebRtcOffer(sdp: string, type: string = 'offer'): Promise<{ sessionId?: string; sdp: string; type: string } | null> {
     try {
       const res = await this.client.post('/audio/webrtc/offer', { sdp, type });
       return res.data;

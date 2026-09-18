@@ -14,6 +14,7 @@ export interface AudioStats {
 export class AudioStreamClient {
   private ws: WebSocket | null = null;
   private pc: RTCPeerConnection | null = null;
+  private webrtcSessionId: string | null = null;
   private audioElement: HTMLAudioElement | null = null;
   private mediaStreamSource: MediaStreamAudioSourceNode | null = null;
   private audioCtx: AudioContext | null = null;
@@ -62,6 +63,10 @@ export class AudioStreamClient {
 
   constructor(onStateChange?: AudioStateChangeHandler) {
     this.onStateChangeCallback = onStateChange;
+  }
+
+  public setOnStateChange(cb: AudioStateChangeHandler): void {
+    this.onStateChangeCallback = cb;
   }
 
   public isActive(): boolean {
@@ -210,14 +215,8 @@ export class AudioStreamClient {
       }
 
       if (this.streamingEngine === 'webrtc') {
-        try {
-          await this.startWebRtcStream();
-          return;
-        } catch (webrtcErr) {
-          console.warn('WebRTC audio connection failed, falling back to WebSocket:', webrtcErr);
-          this.stopWebRtc();
-          this.streamingEngine = 'websocket';
-        }
+        await this.startWebRtcStream();
+        return;
       }
 
       await this.startWebSocketStream(token);
@@ -227,14 +226,20 @@ export class AudioStreamClient {
   }
 
   private async startWebRtcStream(): Promise<void> {
+    // 1. Request Server WebRTC Offer (contains PC local IP and port)
+    const offerData = await api.requestWebRtcOffer();
+    if (!offerData || !offerData.sdp) {
+      throw new Error('Failed to obtain WebRTC stream offer from PC agent');
+    }
+    this.webrtcSessionId = offerData.sessionId;
+
+    // 2. Create local RTCPeerConnection
     this.pc = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' }
       ]
     });
-
-    this.pc.addTransceiver('audio', { direction: 'recvonly' });
 
     if (!this.audioElement) {
       this.audioElement = new Audio();
@@ -254,7 +259,7 @@ export class AudioStreamClient {
           }
           this.mediaStreamSource = this.audioCtx.createMediaStreamSource(stream);
           this.mediaStreamSource.connect(this.gainNode);
-          // Mute raw audio element to allow volume boost and DSP through Web Audio
+          // Mute raw audio element to allow volume boost and studio DSP through Web Audio
           this.audioElement!.muted = true;
         } catch {
           this.audioElement!.muted = false;
@@ -265,13 +270,17 @@ export class AudioStreamClient {
       this.onStateChangeCallback?.(true);
     };
 
-    const offer = await this.pc.createOffer({
-      offerToReceiveAudio: true,
-      offerToReceiveVideo: false
-    });
-    await this.pc.setLocalDescription(offer);
+    // 3. Set remote description with server offer
+    await this.pc.setRemoteDescription(new RTCSessionDescription({
+      sdp: offerData.sdp,
+      type: offerData.type as RTCSdpType
+    }));
 
-    // Wait for candidate gathering
+    // 4. Create Answer
+    const answer = await this.pc.createAnswer();
+    await this.pc.setLocalDescription(answer);
+
+    // 5. Gather candidates briefly (up to 400ms)
     await new Promise<void>((resolve) => {
       if (this.pc!.iceGatheringState === 'complete') {
         resolve();
@@ -283,34 +292,33 @@ export class AudioStreamClient {
           }
         };
         this.pc!.addEventListener('icegatheringstatechange', onGather);
-        setTimeout(resolve, 600);
+        setTimeout(resolve, 400);
       }
     });
 
-    const answer = await api.sendWebRtcOffer(
+    // 6. Submit Answer to Server
+    const answerSuccess = await api.sendWebRtcAnswer(
+      this.webrtcSessionId,
       this.pc.localDescription!.sdp,
       this.pc.localDescription!.type
     );
 
-    if (!answer) {
-      throw new Error('WebRTC signaling failed');
+    if (!answerSuccess) {
+      throw new Error('Failed to register WebRTC answer with PC agent');
     }
 
-    await this.pc.setRemoteDescription(new RTCSessionDescription(answer as any));
-
     this.pc.onconnectionstatechange = () => {
-      if (this.pc?.connectionState === 'connected') {
+      const state = this.pc?.connectionState;
+      if (state === 'connected') {
         this.isRunning = true;
         this.isPlaying = true;
         this.onStateChangeCallback?.(true);
-      } else if (this.pc?.connectionState === 'failed' || this.pc?.connectionState === 'disconnected') {
-        console.warn('WebRTC disconnected, falling back to WebSocket stream');
-        const token = getStoredToken();
-        this.stopWebRtc();
-        this.streamingEngine = 'websocket';
-        if (token) {
-          this.startWebSocketStream(token).catch(() => {});
-        }
+      } else if (state === 'failed') {
+        console.warn('WebRTC audio connection failed');
+        this.stop('WebRTC connection failed. Check LAN connection.');
+      } else if (state === 'disconnected') {
+        console.warn('WebRTC audio disconnected');
+        this.stop('WebRTC disconnected');
       }
     };
   }
@@ -491,6 +499,10 @@ export class AudioStreamClient {
   }
 
   private stopWebRtc() {
+    if (this.webrtcSessionId) {
+      api.stopWebRtcSession(this.webrtcSessionId).catch(() => {});
+      this.webrtcSessionId = null;
+    }
     if (this.pc) {
       this.pc.onconnectionstatechange = null;
       this.pc.ontrack = null;

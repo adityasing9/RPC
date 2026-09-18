@@ -28,7 +28,7 @@ class AudioLoopbackManager:
         self._device_info: Optional[dict] = None
         self.sample_rate: int = 48000
         self.channels: int = 2
-        self.chunk_ms: int = 25
+        self.chunk_ms: int = 20
 
     def get_info(self) -> dict:
         """Return audio device and stream capabilities."""
@@ -234,9 +234,22 @@ async def open_bluetooth_settings(current_device: PairedDevice = Depends(get_cur
         return {"success": False, "error": str(e)}
 
 import fractions
+import time
+import uuid
+from typing import Dict
 import numpy as np
 import av
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
+
+class WebRTCSession:
+    """Tracks active WebRTC peer connection and subscribed audio queue."""
+    def __init__(self, session_id: str, pc: RTCPeerConnection, queue: asyncio.Queue):
+        self.session_id = session_id
+        self.pc = pc
+        self.queue = queue
+        self.created_at = time.time()
+
+webrtc_sessions: Dict[str, WebRTCSession] = {}
 
 class WebRTCLoopbackTrack(MediaStreamTrack):
     """High-performance real-time Opus audio track for WebRTC streaming."""
@@ -249,33 +262,115 @@ class WebRTCLoopbackTrack(MediaStreamTrack):
         self.channels = channels
         self._pts = 0
         self._time_base = fractions.Fraction(1, sample_rate)
+        self._buffer = bytearray()
+        self.frame_samples = int(sample_rate * 0.020)  # Standard 20ms Opus frame (960 samples @ 48kHz)
+        self.bytes_per_frame = self.frame_samples * self.channels * 2  # 16-bit PCM = 2 bytes/sample
 
     async def recv(self):
-        try:
-            chunk = await asyncio.wait_for(self.queue.get(), timeout=0.040)
-            arr = np.frombuffer(chunk, dtype=np.int16).reshape(1, -1)
-            frame = av.AudioFrame.from_ndarray(arr, format='s16', layout='stereo')
-            frame.sample_rate = self.sample_rate
-            frame.pts = self._pts
-            self._pts += frame.samples
-            frame.time_base = self._time_base
-            return frame
-        except Exception:
-            frames = 960
-            arr = np.zeros((1, frames * self.channels), dtype=np.int16)
-            frame = av.AudioFrame.from_ndarray(arr, format='s16', layout='stereo')
-            frame.sample_rate = self.sample_rate
-            frame.pts = self._pts
-            self._pts += frames
-            frame.time_base = self._time_base
-            return frame
+        # Accumulate exact 20ms frame bytes from loopback queue
+        while len(self._buffer) < self.bytes_per_frame:
+            try:
+                chunk = await asyncio.wait_for(self.queue.get(), timeout=0.040)
+                self._buffer.extend(chunk)
+            except Exception:
+                # Fill shortfall with silence if loopback capture underruns
+                shortfall = self.bytes_per_frame - len(self._buffer)
+                if shortfall > 0:
+                    self._buffer.extend(bytes(shortfall))
+                break
+
+        data = bytes(self._buffer[:self.bytes_per_frame])
+        del self._buffer[:self.bytes_per_frame]
+
+        arr = np.frombuffer(data, dtype=np.int16).reshape(1, -1)
+        frame = av.AudioFrame.from_ndarray(arr, format='s16', layout='stereo')
+        frame.sample_rate = self.sample_rate
+        frame.pts = self._pts
+        self._pts += self.frame_samples
+        frame.time_base = self._time_base
+        return frame
+
+@router.post("/webrtc/request-offer")
+async def webrtc_request_offer(
+    current_device: PairedDevice = Depends(get_current_device)
+):
+    """Server generates WebRTC Offer containing PC host LAN IP for direct UDP peer connection."""
+    loop = asyncio.get_running_loop()
+    queue = audio_manager.subscribe(loop)
+
+    pc = RTCPeerConnection()
+    track = WebRTCLoopbackTrack(queue, sample_rate=audio_manager.sample_rate, channels=audio_manager.channels)
+    pc.addTrack(track)
+
+    session_id = str(uuid.uuid4())
+    session = WebRTCSession(session_id, pc, queue)
+    webrtc_sessions[session_id] = session
+
+    @pc.on("connectionstatechange")
+    async def on_connectionstatechange():
+        logger.info(f"WebRTC audio session {session_id} state: {pc.connectionState}")
+        if pc.connectionState in ["failed", "closed", "disconnected"]:
+            audio_manager.unsubscribe(queue)
+            await pc.close()
+            webrtc_sessions.pop(session_id, None)
+
+    offer = await pc.createOffer()
+    await pc.setLocalDescription(offer)
+
+    logger.info(f"Generated WebRTC Offer for session {session_id} (Device: {current_device.device_name})")
+
+    return {
+        "sessionId": session_id,
+        "sdp": pc.localDescription.sdp,
+        "type": pc.localDescription.type
+    }
+
+@router.post("/webrtc/answer")
+async def webrtc_audio_answer(
+    payload: dict,
+    current_device: PairedDevice = Depends(get_current_device)
+):
+    """Client provides SDP Answer to establish direct WebRTC UDP stream."""
+    session_id = payload.get("sessionId")
+    sdp = payload.get("sdp")
+    sdp_type = payload.get("type", "answer")
+
+    if not session_id or session_id not in webrtc_sessions:
+        raise HTTPException(status_code=404, detail="WebRTC session not found or expired")
+    if not sdp:
+        raise HTTPException(status_code=400, detail="Missing sdp")
+
+    session = webrtc_sessions[session_id]
+    await session.pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type=sdp_type))
+    logger.info(f"WebRTC session {session_id} setRemoteDescription successfully applied")
+
+    return {
+        "success": True,
+        "sessionId": session_id,
+        "connectionState": session.pc.connectionState
+    }
+
+@router.post("/webrtc/stop")
+async def webrtc_audio_stop(
+    payload: dict,
+    current_device: PairedDevice = Depends(get_current_device)
+):
+    """Explicitly release WebRTC session, peer connection, and audio loopback queue."""
+    session_id = payload.get("sessionId")
+    if session_id and session_id in webrtc_sessions:
+        session = webrtc_sessions.pop(session_id)
+        audio_manager.unsubscribe(session.queue)
+        await session.pc.close()
+        logger.info(f"WebRTC session {session_id} cleanly closed")
+        return {"success": True, "message": "Session terminated"}
+    return {"success": False, "message": "Session not found"}
 
 @router.post("/webrtc/offer")
 async def webrtc_audio_offer(
     payload: dict,
     current_device: PairedDevice = Depends(get_current_device)
 ):
-    """Establish a peer-to-peer WebRTC Opus audio stream for wireless PC speaker."""
+    """Legacy client-offered WebRTC endpoint."""
     sdp = payload.get("sdp")
     sdp_type = payload.get("type", "offer")
     if not sdp:
@@ -288,18 +383,24 @@ async def webrtc_audio_offer(
     track = WebRTCLoopbackTrack(queue, sample_rate=audio_manager.sample_rate, channels=audio_manager.channels)
     pc.addTrack(track)
 
+    session_id = str(uuid.uuid4())
+    session = WebRTCSession(session_id, pc, queue)
+    webrtc_sessions[session_id] = session
+
     @pc.on("connectionstatechange")
     async def on_connectionstatechange():
-        logger.info(f"WebRTC audio state changed: {pc.connectionState}")
+        logger.info(f"Legacy WebRTC audio state changed: {pc.connectionState}")
         if pc.connectionState in ["failed", "closed", "disconnected"]:
             audio_manager.unsubscribe(queue)
             await pc.close()
+            webrtc_sessions.pop(session_id, None)
 
     await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type=sdp_type))
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
 
     return {
+        "sessionId": session_id,
         "sdp": pc.localDescription.sdp,
         "type": pc.localDescription.type
     }
