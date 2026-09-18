@@ -284,14 +284,14 @@ def _patch_hifi_opus():
 _patch_hifi_opus()
 
 def _inject_stereo_fmtp(sdp: str) -> str:
-    """Inject standard WebRTC stereo, CBR, and high-bitrate parameters into Opus SDP."""
+    """Inject standard WebRTC stereo and high-bitrate parameters into Opus SDP."""
     lines = sdp.splitlines()
     new_lines = []
     has_fmtp = False
     for line in lines:
         new_lines.append(line)
         if line.startswith("a=rtpmap:96 opus/48000/2"):
-            new_lines.append("a=fmtp:96 minptime=10;ptime=20;maxptime=40;useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=256000;cbr=1")
+            new_lines.append("a=fmtp:96 minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=256000")
             has_fmtp = True
     return "\r\n".join(new_lines) + "\r\n" if has_fmtp else sdp
 
@@ -319,15 +319,8 @@ class WebRTCLoopbackTrack(MediaStreamTrack):
         self._buffer = bytearray()
         self.frame_samples = int(sample_rate * 0.020)  # Standard 20ms Opus frame (960 samples @ 48kHz)
         self.bytes_per_frame = self.frame_samples * self.channels * 2  # 16-bit PCM = 2 bytes/sample
-        self._warmed_up = False
 
     async def recv(self):
-        # Warm-up pre-buffer: wait until 2 chunks (~40ms) arrive to prevent initial underruns
-        if not self._warmed_up:
-            while self.queue.qsize() < 2:
-                await asyncio.sleep(0.010)
-            self._warmed_up = True
-
         # Discard stale audio chunks only if queue backed up significantly (>300ms)
         while self.queue.qsize() > 15:
             try:
@@ -335,12 +328,13 @@ class WebRTCLoopbackTrack(MediaStreamTrack):
             except asyncio.QueueEmpty:
                 break
 
-        # Accumulate exact 20ms frame bytes from loopback queue without hard silence breaks
+        # Accumulate exact 20ms frame bytes from loopback queue
         while len(self._buffer) < self.bytes_per_frame:
             try:
-                chunk = await asyncio.wait_for(self.queue.get(), timeout=0.150)
+                chunk = await asyncio.wait_for(self.queue.get(), timeout=0.080)
                 self._buffer.extend(chunk)
             except Exception:
+                # Fill shortfall with silence if loopback capture underruns
                 shortfall = self.bytes_per_frame - len(self._buffer)
                 if shortfall > 0:
                     self._buffer.extend(bytes(shortfall))
