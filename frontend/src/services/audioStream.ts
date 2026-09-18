@@ -286,9 +286,16 @@ export class AudioStreamClient {
       type: offerData.type as RTCSdpType
     }));
 
-    // 4. Create Answer
+    // 4. Create Answer and ensure 256kbps stereo negotiation
     const answer = await this.pc.createAnswer();
-    await this.pc.setLocalDescription(answer);
+    let answerSdp = answer.sdp || '';
+    if (!answerSdp.includes('stereo=1')) {
+      answerSdp = answerSdp.replace(
+        /a=rtpmap:(\d+) opus\/48000\/2/g,
+        'a=rtpmap:$1 opus/48000/2\r\na=fmtp:$1 minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=256000'
+      );
+    }
+    await this.pc.setLocalDescription(new RTCSessionDescription({ sdp: answerSdp, type: answer.type }));
 
     // 5. Gather candidates briefly (up to 400ms)
     await new Promise<void>((resolve) => {

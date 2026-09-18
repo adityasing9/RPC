@@ -45,7 +45,7 @@ class AudioLoopbackManager:
     def subscribe(self, loop: asyncio.AbstractEventLoop) -> asyncio.Queue:
         """Register a new listener and start capture worker if needed."""
         with self._lock:
-            q: asyncio.Queue = asyncio.Queue(maxsize=50)
+            q: asyncio.Queue = asyncio.Queue(maxsize=20)
             self._subscribers.add(q)
             self._loop = loop
 
@@ -266,7 +266,41 @@ import uuid
 from typing import Dict
 import numpy as np
 import av
+import aiortc.codecs.opus as aiortc_opus
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
+
+# Patch aiortc OpusEncoder: switch from telephone 'voip' to high-fidelity 'audio' CELT music mode (192 kbps)
+def _patch_hifi_opus():
+    def _hifi_init(self) -> None:
+        self.codec = aiortc_opus.CodecContext.create("libopus", "w")
+        self.codec.bit_rate = 192000  # 192 kbps studio audio quality
+        self.codec.format = "s16"
+        self.codec.layout = "stereo"
+        self.codec.options = {"application": "audio"}  # CELT fullband music mode (20Hz-20kHz)
+        self.codec.sample_rate = aiortc_opus.SAMPLE_RATE
+        self.codec.time_base = aiortc_opus.TIME_BASE
+        self.resampler = aiortc_opus.AudioResampler(
+            format="s16",
+            layout="stereo",
+            rate=aiortc_opus.SAMPLE_RATE,
+            frame_size=aiortc_opus.SAMPLES_PER_FRAME,
+        )
+        self.first_packet_pts = None
+    aiortc_opus.OpusEncoder.__init__ = _hifi_init
+
+_patch_hifi_opus()
+
+def _inject_stereo_fmtp(sdp: str) -> str:
+    """Inject standard WebRTC stereo and high-bitrate parameters into Opus SDP."""
+    lines = sdp.splitlines()
+    new_lines = []
+    has_fmtp = False
+    for line in lines:
+        new_lines.append(line)
+        if line.startswith("a=rtpmap:96 opus/48000/2"):
+            new_lines.append("a=fmtp:96 minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=256000")
+            has_fmtp = True
+    return "\r\n".join(new_lines) + "\r\n" if has_fmtp else sdp
 
 class WebRTCSession:
     """Tracks active WebRTC peer connection and subscribed audio queue."""
@@ -294,10 +328,17 @@ class WebRTCLoopbackTrack(MediaStreamTrack):
         self.bytes_per_frame = self.frame_samples * self.channels * 2  # 16-bit PCM = 2 bytes/sample
 
     async def recv(self):
+        # Keep latency ultra-low: discard stale audio chunks if queue backed up (>80ms)
+        while self.queue.qsize() > 4:
+            try:
+                self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
         # Accumulate exact 20ms frame bytes from loopback queue
         while len(self._buffer) < self.bytes_per_frame:
             try:
-                chunk = await asyncio.wait_for(self.queue.get(), timeout=0.040)
+                chunk = await asyncio.wait_for(self.queue.get(), timeout=0.080)
                 self._buffer.extend(chunk)
             except Exception:
                 # Fill shortfall with silence if loopback capture underruns
@@ -342,9 +383,11 @@ async def webrtc_request_offer(
             webrtc_sessions.pop(session_id, None)
 
     offer = await pc.createOffer()
-    await pc.setLocalDescription(offer)
+    hifi_sdp = _inject_stereo_fmtp(offer.sdp)
+    hifi_offer = RTCSessionDescription(sdp=hifi_sdp, type=offer.type)
+    await pc.setLocalDescription(hifi_offer)
 
-    logger.info(f"Generated WebRTC Offer for session {session_id} (Device: {current_device.device_name})")
+    logger.info(f"Generated Hi-Fi WebRTC Offer (256kbps Stereo) for session {session_id} (Device: {current_device.device_name})")
 
     return {
         "sessionId": session_id,
@@ -424,7 +467,9 @@ async def webrtc_audio_offer(
 
     await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type=sdp_type))
     answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
+    hifi_answer_sdp = _inject_stereo_fmtp(answer.sdp)
+    hifi_answer = RTCSessionDescription(sdp=hifi_answer_sdp, type=answer.type)
+    await pc.setLocalDescription(hifi_answer)
 
     return {
         "sessionId": session_id,
