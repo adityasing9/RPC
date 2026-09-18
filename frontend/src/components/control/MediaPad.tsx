@@ -1,10 +1,18 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Volume2, VolumeX, Volume1, Play, Pause, SkipForward, SkipBack, Square } from 'lucide-react';
 import { api } from '../../services/api';
 
 export const MediaPad: React.FC = () => {
   const [isPlaying, setIsPlaying] = useState<boolean>(true);
   const [isMuted, setIsMuted] = useState<boolean>(false);
+
+  useEffect(() => {
+    api.getVolumeStatus().then((status) => {
+      if (status && typeof status.muted === 'boolean') {
+        setIsMuted(status.muted);
+      }
+    });
+  }, []);
 
   const handleVolumeUp = async () => {
     try {
@@ -20,8 +28,12 @@ export const MediaPad: React.FC = () => {
 
   const handleMuteToggle = async () => {
     try {
-      await api.volumeMute();
-      setIsMuted(!isMuted);
+      const res = await api.volumeMute();
+      if (typeof res.muted === 'boolean') {
+        setIsMuted(res.muted);
+      } else {
+        setIsMuted(!isMuted);
+      }
     } catch (e) {}
   };
 

@@ -57,6 +57,12 @@ export const WirelessSpeaker: React.FC = () => {
       setStreamingEngine(sharedAudioClient.getStreamingEngine());
     };
 
+    api.getVolumeStatus().then((status) => {
+      if (status && typeof status.muted === 'boolean') {
+        setIsLaptopMuted(status.muted);
+      }
+    });
+
     const interval = setInterval(checkState, 1000);
     return () => clearInterval(interval);
   }, []);
@@ -133,8 +139,12 @@ export const WirelessSpeaker: React.FC = () => {
 
   const handleMuteLaptopSpeakers = async () => {
     try {
-      await api.volumeMute();
-      setIsLaptopMuted(!isLaptopMuted);
+      const res = await api.volumeMute();
+      if (typeof res.muted === 'boolean') {
+        setIsLaptopMuted(res.muted);
+      } else {
+        setIsLaptopMuted(!isLaptopMuted);
+      }
     } catch (e) {
       console.error('Failed to toggle laptop volume mute', e);
     }
@@ -449,15 +459,24 @@ export const WirelessSpeaker: React.FC = () => {
 
               {/* Mute Physical Laptop Speakers */}
               <div className="flex items-center justify-between pt-1 border-t border-dark-800/60">
-                <span className="text-[11px] text-slate-400 flex items-center gap-1.5">
-                  <Laptop className="w-3.5 h-3.5 text-slate-500" />
-                  Laptop Speakers
-                </span>
+                <div className="flex items-center gap-1.5">
+                  <Laptop className={`w-3.5 h-3.5 ${isLaptopMuted ? 'text-rose-400' : 'text-slate-400'}`} />
+                  <span className="text-[11px] text-slate-300 font-medium">Laptop Speakers</span>
+                  <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-md ${isLaptopMuted ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'}`}>
+                    {isLaptopMuted ? 'MUTED' : 'ACTIVE'}
+                  </span>
+                </div>
                 <button
                   onClick={handleMuteLaptopSpeakers}
-                  className="text-[10px] font-semibold px-2.5 py-1 rounded-lg bg-dark-900 hover:bg-dark-800 border border-dark-800 text-slate-300 hover:text-white transition-all active:scale-95"
+                  className={`text-[10px] font-bold px-2.5 py-1 rounded-lg border transition-all active:scale-95 flex items-center gap-1.5 ${
+                    isLaptopMuted
+                      ? 'bg-rose-500/20 border-rose-500/40 text-rose-300 hover:bg-rose-500/30'
+                      : 'bg-dark-900 hover:bg-dark-800 border-dark-700 text-slate-300 hover:text-white'
+                  }`}
+                  title={isLaptopMuted ? 'Click to unmute physical laptop speakers' : 'Mute physical laptop speakers so audio only plays through your phone'}
                 >
-                  Toggle Laptop Mute
+                  {isLaptopMuted ? <VolumeX className="w-3.5 h-3.5 text-rose-400" /> : <Volume2 className="w-3.5 h-3.5 text-slate-400" />}
+                  <span>{isLaptopMuted ? 'Unmute Laptop' : 'Mute Laptop'}</span>
                 </button>
               </div>
             </div>

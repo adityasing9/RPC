@@ -181,9 +181,22 @@ class ApiService {
     return res.data;
   }
 
-  async volumeMute() {
-    const res = await this.client.post<StructuredResponse>('/media/volume/mute');
-    return res.data;
+  async getVolumeStatus(): Promise<{ muted: boolean; volume: number } | null> {
+    try {
+      const res = await this.client.get<StructuredResponse>('/media/volume/status');
+      return res.data?.data as any;
+    } catch {
+      return null;
+    }
+  }
+
+  async volumeMute(mute?: boolean): Promise<{ success: boolean; muted?: boolean }> {
+    try {
+      const res = await this.client.post<StructuredResponse>('/media/volume/mute', { mute });
+      return { success: !!res.data?.success, muted: (res.data?.data as any)?.muted };
+    } catch {
+      return { success: false };
+    }
   }
 
   async playPause() {

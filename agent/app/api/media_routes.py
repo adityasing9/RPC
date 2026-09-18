@@ -1,4 +1,5 @@
 """Windows Multimedia controls endpoints."""
+from typing import Optional
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from app.auth.dependencies import get_current_device
@@ -8,6 +9,7 @@ from app.media.controller import (
     volume_up,
     volume_down,
     volume_mute_toggle,
+    get_volume_status,
     media_play_pause,
     media_next,
     media_prev,
@@ -18,6 +20,14 @@ router = APIRouter(prefix="/api/v1/media", tags=["Media Controls"])
 
 class StepRequest(BaseModel):
     steps: int = 1
+
+class MuteRequest(BaseModel):
+    mute: Optional[bool] = None
+
+@router.get("/volume/status", response_model=StructuredResponse)
+async def api_volume_status(current_device: PairedDevice = Depends(get_current_device)):
+    res = get_volume_status()
+    return StructuredResponse(success=True, action="media.volume.status", data=res)
 
 @router.post("/volume/up", response_model=StructuredResponse)
 async def api_volume_up(req: StepRequest = StepRequest(), current_device: PairedDevice = Depends(get_current_device)):
@@ -30,8 +40,11 @@ async def api_volume_down(req: StepRequest = StepRequest(), current_device: Pair
     return StructuredResponse(success=True, action="media.volume.down", data=res)
 
 @router.post("/volume/mute", response_model=StructuredResponse)
-async def api_volume_mute(current_device: PairedDevice = Depends(get_current_device)):
-    res = volume_mute_toggle()
+async def api_volume_mute(
+    req: MuteRequest = MuteRequest(),
+    current_device: PairedDevice = Depends(get_current_device)
+):
+    res = volume_mute_toggle(desired_mute=req.mute)
     return StructuredResponse(success=True, action="media.volume.mute", data=res)
 
 @router.post("/playback/play-pause", response_model=StructuredResponse)
