@@ -295,7 +295,27 @@ class ApiService {
   // Screen
   getScreenshotUrl(): string {
     const token = getStoredToken();
-    return `${this.baseUrl}/api/v1/screen/capture?t=${Date.now()}&token=${token || ''}`;
+    return `${this.baseUrl}/api/v1/screen/capture?t=${Date.now()}&token=${encodeURIComponent(token || '')}`;
+  }
+
+  getScreenStreamUrl(fps: number = 5, quality: number = 60, width: number = 1080): string {
+    const token = getStoredToken();
+    return `${this.baseUrl}/api/v1/screen/stream?fps=${fps}&quality=${quality}&width=${width}&token=${encodeURIComponent(token || '')}`;
+  }
+
+  async getScreenInfo() {
+    const res = await this.client.get<{ width: number; height: number; aspect_ratio: number; supported_fps: number[] }>('/screen/info');
+    return res.data;
+  }
+
+  async clickOnScreen(xPercent: number, yPercent: number, button: 'left' | 'right' | 'middle' = 'left', action: 'click' | 'double_click' = 'click') {
+    const res = await this.client.post('/screen/click', {
+      x_percent: xPercent,
+      y_percent: yPercent,
+      button,
+      action
+    });
+    return res.data;
   }
 
   async fetchScreenshotBlob(): Promise<string> {
