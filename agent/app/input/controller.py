@@ -99,7 +99,21 @@ def click_mouse_at_percent(x_percent: float, y_percent: float, button: str = "le
     if not sys.platform.startswith("win"):
         return
     import ctypes
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
     user32 = ctypes.windll.user32
+    try:
+        hdesk = user32.OpenInputDesktop(0, False, 0x01FF)
+        if hdesk:
+            user32.SetThreadDesktop(hdesk)
+            user32.CloseDesktop(hdesk)
+    except Exception:
+        pass
     w = user32.GetSystemMetrics(0)
     h = user32.GetSystemMetrics(1)
     target_x = int(max(0.0, min(x_percent, 1.0)) * w)

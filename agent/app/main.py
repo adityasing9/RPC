@@ -1,5 +1,7 @@
 """RCPC Windows Agent Application Factory."""
 import logging
+import sys
+import ctypes
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, Depends, Request
@@ -10,6 +12,19 @@ from app.logging_config import logger, audit_logger
 from app.security.rate_limiter import check_rate_limit_dependency
 from app.auth.pairing import pairing_manager
 from app.transports.detector import detect_transports
+
+def make_dpi_aware():
+    """Enable Windows Per-Monitor DPI awareness so all screen and cursor APIs match 1:1."""
+    if sys.platform.startswith("win"):
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+
+make_dpi_aware()
 
 # Routers
 from app.api.auth_routes import router as auth_router

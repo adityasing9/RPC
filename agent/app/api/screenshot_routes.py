@@ -18,6 +18,19 @@ from app.logging_config import audit_logger
 router = APIRouter(prefix="/api/v1/screen", tags=["Screen Capture & Live Stream"])
 bearer_scheme = HTTPBearer(auto_error=False)
 
+def make_dpi_aware():
+    """Ensure Windows Per-Monitor DPI awareness so all screen and cursor APIs match 1:1."""
+    if sys.platform.startswith("win"):
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+
+make_dpi_aware()
+
 def attach_input_desktop():
     """Ensure current thread is attached to the active input desktop station."""
     if sys.platform.startswith("win"):
@@ -32,6 +45,7 @@ def attach_input_desktop():
 
 def get_screen_metrics():
     """Retrieve primary monitor resolution."""
+    make_dpi_aware()
     if sys.platform.startswith("win"):
         try:
             user32 = ctypes.windll.user32
@@ -69,19 +83,30 @@ def get_cursor_pos():
     return None
 
 def draw_mouse_cursor(image: Image.Image, cx: int, cy: int):
-    """Draw a high-visibility Windows mouse cursor pointer on the image."""
+    """Draw a high-visibility Windows mouse cursor pointer on the image.
+    Automatically flips upward or leftward near screen edges so the cursor body is never clipped.
+    """
     try:
         draw = ImageDraw.Draw(image)
+        w, h = image.size
+        # Clamping hotspot to canvas bounds
+        cx = max(0, min(cx, w - 1))
+        cy = max(0, min(cy, h - 1))
+
+        # Dynamic orientation to keep pointer fully visible near bottom and right edges
+        dx_mult = -1 if cx > w - 16 else 1
+        dy_mult = -1 if cy > h - 22 else 1
+
         points = [
             (cx, cy),
-            (cx, cy + 19),
-            (cx + 4, cy + 15),
-            (cx + 8, cy + 23),
-            (cx + 12, cy + 21),
-            (cx + 8, cy + 13),
-            (cx + 14, cy + 13),
+            (cx, cy + dy_mult * 19),
+            (cx + dx_mult * 4, cy + dy_mult * 15),
+            (cx + dx_mult * 8, cy + dy_mult * 23),
+            (cx + dx_mult * 12, cy + dy_mult * 21),
+            (cx + dx_mult * 8, cy + dy_mult * 13),
+            (cx + dx_mult * 14, cy + dy_mult * 13),
         ]
-        # Drop shadow for high visibility on bright backgrounds
+        # Drop shadow for contrast on white/bright desktop backgrounds
         shadow = [(x + 1, y + 1) for x, y in points]
         draw.polygon(shadow, fill=(20, 20, 20))
         # Crisp white fill with black border
@@ -91,13 +116,16 @@ def draw_mouse_cursor(image: Image.Image, cx: int, cy: int):
 
 def grab_screen_frame(max_width: int = 1280, quality: int = 60) -> bytes:
     """Capture desktop, render mouse cursor, and return optimized JPEG bytes."""
+    make_dpi_aware()
     attach_input_desktop()
     cursor_pos = get_cursor_pos()
+    w_metric, h_metric = get_screen_metrics()
+
     try:
-        screenshot = ImageGrab.grab(all_screens=True)
+        screenshot = ImageGrab.grab(all_screens=False)
     except Exception:
         # Fallback placeholder if screen is locked or unreadable
-        w, h = get_screen_metrics()
+        w, h = w_metric, h_metric
         img = Image.new("RGB", (min(max_width, w), int(min(max_width, w) * (h / max(1, w)))), color=(15, 23, 42))
         draw = ImageDraw.Draw(img)
         draw.text((30, 30), "Screen Inactive / Desktop Locked", fill=(148, 163, 184))
@@ -105,18 +133,25 @@ def grab_screen_frame(max_width: int = 1280, quality: int = 60) -> bytes:
         img.save(buf, format="JPEG", quality=50)
         return buf.getvalue()
 
+    # Calculate normalized percentage of cursor across the original screen
+    norm_x, norm_y = None, None
+    if cursor_pos and w_metric > 0 and h_metric > 0:
+        span_w = max(screenshot.width, w_metric)
+        span_h = max(screenshot.height, h_metric)
+        norm_x = max(0.0, min(1.0, cursor_pos[0] / float(span_w)))
+        norm_y = max(0.0, min(1.0, cursor_pos[1] / float(span_h)))
+
     # If resizing, scale down first then draw razor-sharp cursor on top
     if screenshot.width > max_width:
         ratio = max_width / screenshot.width
         new_size = (max_width, int(screenshot.height * ratio))
         screenshot = screenshot.resize(new_size, Image.BILINEAR)
-        if cursor_pos:
-            cx = int(cursor_pos[0] * ratio)
-            cy = int(cursor_pos[1] * ratio)
-            draw_mouse_cursor(screenshot, cx, cy)
-    else:
-        if cursor_pos:
-            draw_mouse_cursor(screenshot, cursor_pos[0], cursor_pos[1])
+
+    # Project cursor onto final scaled frame
+    if norm_x is not None and norm_y is not None:
+        cx = int(round(norm_x * (screenshot.width - 1)))
+        cy = int(round(norm_y * (screenshot.height - 1)))
+        draw_mouse_cursor(screenshot, cx, cy)
 
     buffer = io.BytesIO()
     screenshot.save(buffer, format="JPEG", quality=max(15, min(quality, 95)))
