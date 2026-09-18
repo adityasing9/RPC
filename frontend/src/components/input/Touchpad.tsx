@@ -42,7 +42,7 @@ export const Touchpad: React.FC = () => {
 
   // Live Screen Stream State
   const [isLiveActive, setIsLiveActive] = useState<boolean>(true);
-  const [fps, setFps] = useState<number>(5);
+  const [fps, setFps] = useState<number>(30);
   const [quality, setQuality] = useState<number>(60);
   const [streamKey, setStreamKey] = useState<number>(Date.now());
   const [streamError, setStreamError] = useState<boolean>(false);
@@ -316,7 +316,7 @@ export const Touchpad: React.FC = () => {
 
           {/* FPS Selector */}
           <div className="flex items-center bg-dark-950 rounded-xl p-0.5 border border-dark-800 text-[10px] font-mono">
-            {[2, 5, 10, 15].map((f) => (
+            {[5, 10, 15, 20, 30].map((f) => (
               <button
                 key={f}
                 onClick={() => setFps(f)}

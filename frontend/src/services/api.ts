@@ -298,7 +298,7 @@ class ApiService {
     return `${this.baseUrl}/api/v1/screen/capture?t=${Date.now()}&token=${encodeURIComponent(token || '')}`;
   }
 
-  getScreenStreamUrl(fps: number = 5, quality: number = 60, width: number = 1080): string {
+  getScreenStreamUrl(fps: number = 30, quality: number = 60, width: number = 1280): string {
     const token = getStoredToken();
     return `${this.baseUrl}/api/v1/screen/stream?fps=${fps}&quality=${quality}&width=${width}&token=${encodeURIComponent(token || '')}`;
   }

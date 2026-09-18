@@ -3,6 +3,7 @@ import asyncio
 import io
 import sys
 import ctypes
+import ctypes.wintypes
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Security
 from fastapi.responses import Response, StreamingResponse
@@ -41,9 +42,57 @@ def get_screen_metrics():
             pass
     return 1920, 1080
 
+def get_cursor_pos():
+    """Retrieve current Windows mouse cursor position (x, y) if visible."""
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        user32 = ctypes.windll.user32
+        class CURSORINFO(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", ctypes.wintypes.DWORD),
+                ("flags", ctypes.wintypes.DWORD),
+                ("hCursor", ctypes.wintypes.HANDLE),
+                ("ptScreenPos", ctypes.wintypes.POINT),
+            ]
+        ci = CURSORINFO()
+        ci.cbSize = ctypes.sizeof(CURSORINFO)
+        if user32.GetCursorInfo(ctypes.byref(ci)):
+            if ci.flags & 1:  # CURSOR_SHOWING
+                return ci.ptScreenPos.x, ci.ptScreenPos.y
+        # Fallback to GetCursorPos
+        pt = ctypes.wintypes.POINT()
+        if user32.GetCursorPos(ctypes.byref(pt)):
+            return pt.x, pt.y
+    except Exception:
+        pass
+    return None
+
+def draw_mouse_cursor(image: Image.Image, cx: int, cy: int):
+    """Draw a high-visibility Windows mouse cursor pointer on the image."""
+    try:
+        draw = ImageDraw.Draw(image)
+        points = [
+            (cx, cy),
+            (cx, cy + 19),
+            (cx + 4, cy + 15),
+            (cx + 8, cy + 23),
+            (cx + 12, cy + 21),
+            (cx + 8, cy + 13),
+            (cx + 14, cy + 13),
+        ]
+        # Drop shadow for high visibility on bright backgrounds
+        shadow = [(x + 1, y + 1) for x, y in points]
+        draw.polygon(shadow, fill=(20, 20, 20))
+        # Crisp white fill with black border
+        draw.polygon(points, fill="white", outline="black")
+    except Exception:
+        pass
+
 def grab_screen_frame(max_width: int = 1280, quality: int = 60) -> bytes:
-    """Capture desktop and return optimized JPEG bytes."""
+    """Capture desktop, render mouse cursor, and return optimized JPEG bytes."""
     attach_input_desktop()
+    cursor_pos = get_cursor_pos()
     try:
         screenshot = ImageGrab.grab(all_screens=True)
     except Exception:
@@ -56,10 +105,18 @@ def grab_screen_frame(max_width: int = 1280, quality: int = 60) -> bytes:
         img.save(buf, format="JPEG", quality=50)
         return buf.getvalue()
 
+    # If resizing, scale down first then draw razor-sharp cursor on top
     if screenshot.width > max_width:
         ratio = max_width / screenshot.width
         new_size = (max_width, int(screenshot.height * ratio))
         screenshot = screenshot.resize(new_size, Image.BILINEAR)
+        if cursor_pos:
+            cx = int(cursor_pos[0] * ratio)
+            cy = int(cursor_pos[1] * ratio)
+            draw_mouse_cursor(screenshot, cx, cy)
+    else:
+        if cursor_pos:
+            draw_mouse_cursor(screenshot, cursor_pos[0], cursor_pos[1])
 
     buffer = io.BytesIO()
     screenshot.save(buffer, format="JPEG", quality=max(15, min(quality, 95)))
@@ -102,8 +159,8 @@ async def get_screen_info(current_device: PairedDevice = Depends(resolve_device_
         "width": w,
         "height": h,
         "aspect_ratio": round(w / max(1, h), 3),
-        "supported_fps": [2, 5, 10, 15],
-        "default_fps": 5,
+        "supported_fps": [5, 10, 15, 20, 30],
+        "default_fps": 30,
     }
 
 @router.get("/capture")
@@ -125,13 +182,13 @@ async def capture_screen(
 
 @router.get("/stream")
 async def stream_screen(
-    fps: int = 5,
+    fps: int = 30,
     quality: int = 60,
     width: int = 1280,
     current_device: PairedDevice = Depends(resolve_device_or_query_token)
 ):
     """Continuous high-performance MJPEG live screen preview stream."""
-    safe_fps = max(1, min(fps, 15))
+    safe_fps = max(1, min(fps, 30))
     safe_quality = max(20, min(quality, 85))
     safe_width = max(480, min(width, 1920))
     target_frame_time = 1.0 / safe_fps
