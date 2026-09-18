@@ -117,10 +117,18 @@ export const WirelessSpeaker: React.FC = () => {
     sharedAudioClient.setLatencyPreset(preset);
   };
 
-  const handleToggleEngine = (eng: 'webrtc' | 'websocket') => {
+  const handleToggleEngine = async (eng: 'webrtc' | 'websocket') => {
+    if (eng === streamingEngine) return;
     setErrorMessage(null);
     setStreamingEngine(eng);
-    sharedAudioClient.setStreamingEngine(eng);
+    if (isActive) {
+      setConnecting(true);
+      await sharedAudioClient.setStreamingEngine(eng);
+      setIsActive(sharedAudioClient.isActive());
+      setConnecting(false);
+    } else {
+      sharedAudioClient.setStreamingEngine(eng);
+    }
   };
 
   const handleMuteLaptopSpeakers = async () => {

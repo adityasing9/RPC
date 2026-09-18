@@ -116,11 +116,21 @@ export class AudioStreamClient {
     return this.streamingEngine;
   }
 
-  public setStreamingEngine(eng: StreamingEngine): void {
+  public async setStreamingEngine(eng: StreamingEngine): Promise<void> {
+    if (this.streamingEngine === eng) return;
     this.streamingEngine = eng;
     if (this.isRunning) {
+      if (eng === 'webrtc') {
+        if (!this.audioElement) {
+          this.audioElement = new Audio();
+          this.audioElement.autoplay = true;
+          (this.audioElement as any).playsInline = true;
+        }
+        this.audioElement.play().catch(() => {});
+      }
       this.stop();
-      this.start();
+      await new Promise((r) => setTimeout(r, 120));
+      await this.start();
     }
   }
 

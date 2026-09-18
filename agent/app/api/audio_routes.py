@@ -162,14 +162,7 @@ class AudioLoopbackManager:
                 pass
             self._out_stream = None
 
-        if self._pa:
-            try:
-                self._pa.terminate()
-            except Exception:
-                pass
-            self._pa = None
-
-        logger.info("Audio loopback streams stopped and resources freed")
+        logger.info("Audio loopback streams stopped and freed (PyAudio kept warm)")
 
 audio_manager = AudioLoopbackManager()
 
