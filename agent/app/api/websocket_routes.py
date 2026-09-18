@@ -16,6 +16,14 @@ from app.input.controller import (
     send_text,
     send_special_key
 )
+from app.media.controller import (
+    volume_up,
+    volume_down,
+    volume_mute_toggle,
+    media_play_pause,
+    media_next,
+    media_prev
+)
 
 logger = logging.getLogger("rcpc.ws")
 router = APIRouter(tags=["WebSocket Real-Time"])
@@ -104,6 +112,21 @@ async def websocket_telemetry_endpoint(
                 elif msg_type == "input.keyboard.key":
                     key = msg.get("key", "")
                     send_special_key(key)
+                elif msg_type == "media.volume.up":
+                    steps = int(msg.get("steps", 1))
+                    volume_up(steps)
+                elif msg_type == "media.volume.down":
+                    steps = int(msg.get("steps", 1))
+                    volume_down(steps)
+                elif msg_type == "media.volume.mute":
+                    mute = msg.get("mute")
+                    volume_mute_toggle(desired_mute=mute)
+                elif msg_type == "media.playback.play_pause":
+                    media_play_pause()
+                elif msg_type == "media.playback.next":
+                    media_next()
+                elif msg_type == "media.playback.prev":
+                    media_prev()
                 elif msg_type == "ping":
                     await websocket.send_text(json.dumps({"type": "pong", "time": msg.get("time")}))
             except Exception as e:

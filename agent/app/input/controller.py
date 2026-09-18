@@ -46,10 +46,24 @@ SPECIAL_KEYS = {
     "win": VK_LWIN,
 }
 
+def ensure_interactive_desktop():
+    """Ensure current thread is attached to the active user's interactive desktop."""
+    if not sys.platform.startswith("win"):
+        return
+    import ctypes
+    user32 = ctypes.windll.user32
+    hdesk = user32.OpenInputDesktop(0, False, 0x01FF)
+    if not hdesk:
+        hdesk = user32.OpenDesktopW("default", 0, False, 0x01FF)
+    if hdesk:
+        user32.SetThreadDesktop(hdesk)
+        user32.CloseDesktop(hdesk)
+
 def move_mouse_relative(dx: float, dy: float, sensitivity: float = 1.0):
     """Move cursor by relative delta pixels."""
     if not sys.platform.startswith("win"):
         return
+    ensure_interactive_desktop()
     import ctypes
     user32 = ctypes.windll.user32
     scaled_dx = int(round(dx * sensitivity))
@@ -64,6 +78,7 @@ def mouse_click(button: str = "left", action: str = "click"):
     """
     if not sys.platform.startswith("win"):
         return
+    ensure_interactive_desktop()
     import ctypes
     user32 = ctypes.windll.user32
     
@@ -98,6 +113,7 @@ def click_mouse_at_percent(x_percent: float, y_percent: float, button: str = "le
     """Move cursor to relative percent coordinate on screen and trigger click."""
     if not sys.platform.startswith("win"):
         return
+    ensure_interactive_desktop()
     import ctypes
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
@@ -107,13 +123,6 @@ def click_mouse_at_percent(x_percent: float, y_percent: float, button: str = "le
         except Exception:
             pass
     user32 = ctypes.windll.user32
-    try:
-        hdesk = user32.OpenInputDesktop(0, False, 0x01FF)
-        if hdesk:
-            user32.SetThreadDesktop(hdesk)
-            user32.CloseDesktop(hdesk)
-    except Exception:
-        pass
     w = user32.GetSystemMetrics(0)
     h = user32.GetSystemMetrics(1)
     target_x = int(max(0.0, min(x_percent, 1.0)) * w)
@@ -125,6 +134,7 @@ def mouse_scroll(delta: int):
     """Scroll mouse wheel vertically."""
     if not sys.platform.startswith("win"):
         return
+    ensure_interactive_desktop()
     import ctypes
     user32 = ctypes.windll.user32
     # Windows standard WHEEL_DELTA is 120
@@ -135,6 +145,7 @@ def send_special_key(key_name: str) -> bool:
     """Send a named special key like enter, backspace, etc."""
     if not sys.platform.startswith("win"):
         return False
+    ensure_interactive_desktop()
     import ctypes
     user32 = ctypes.windll.user32
     vk = SPECIAL_KEYS.get(key_name.lower())
@@ -150,6 +161,7 @@ def send_text(text: str):
     """Send unicode text characters directly."""
     if not sys.platform.startswith("win"):
         return
+    ensure_interactive_desktop()
     import ctypes
     user32 = ctypes.windll.user32
     for char in text:
