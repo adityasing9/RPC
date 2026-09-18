@@ -82,6 +82,9 @@ export class AudioStreamClient {
     if (this.gainNode) {
       this.gainNode.gain.value = this.isPhoneMutedState ? 0 : this.volume;
     }
+    if (this.audioElement) {
+      this.audioElement.volume = this.isPhoneMutedState ? 0 : Math.min(1.0, this.volume);
+    }
   }
 
   public isMuted(): boolean {
@@ -92,6 +95,10 @@ export class AudioStreamClient {
     this.isPhoneMutedState = !this.isPhoneMutedState;
     if (this.gainNode) {
       this.gainNode.gain.value = this.isPhoneMutedState ? 0 : this.volume;
+    }
+    if (this.audioElement) {
+      this.audioElement.muted = this.isPhoneMutedState;
+      this.audioElement.volume = this.isPhoneMutedState ? 0 : Math.min(1.0, this.volume);
     }
     return this.isPhoneMutedState;
   }
@@ -250,19 +257,22 @@ export class AudioStreamClient {
     this.pc.ontrack = (event) => {
       const stream = event.streams[0] || new MediaStream([event.track]);
       this.audioElement!.srcObject = stream;
-      this.audioElement!.play().catch(() => {});
+      this.audioElement!.muted = this.isPhoneMutedState;
+      this.audioElement!.volume = this.isPhoneMutedState ? 0 : Math.min(1.0, this.volume);
+      this.audioElement!.play().catch((e) => {
+        console.warn('Audio play auto-resume:', e);
+      });
 
-      if (this.audioCtx && this.gainNode) {
+      // Visualizer: route MediaStream to AnalyserNode only
+      if (this.audioCtx && this.analyserNode) {
         try {
           if (this.mediaStreamSource) {
             this.mediaStreamSource.disconnect();
           }
           this.mediaStreamSource = this.audioCtx.createMediaStreamSource(stream);
-          this.mediaStreamSource.connect(this.gainNode);
-          // Mute raw audio element to allow volume boost and studio DSP through Web Audio
-          this.audioElement!.muted = true;
-        } catch {
-          this.audioElement!.muted = false;
+          this.mediaStreamSource.connect(this.analyserNode);
+        } catch (visErr) {
+          console.warn('Could not attach visualizer to MediaStream:', visErr);
         }
       }
       this.isRunning = true;

@@ -118,6 +118,25 @@ class AudioLoopbackManager:
                 stream_callback=_in_callback
             )
 
+            # Start a silent keepalive feeder on default output speakers to drive the WASAPI clock
+            try:
+                def _out_callback(in_data, frame_count, time_info, status):
+                    return (bytes(frame_count * self.channels * 2), pyaudio.paContinue)
+
+                self._out_stream = self._pa.open(
+                    format=pyaudio.paInt16,
+                    channels=self.channels,
+                    rate=self.sample_rate,
+                    output=True,
+                    output_device_index=default_speakers["index"],
+                    frames_per_buffer=frames_per_buffer,
+                    stream_callback=_out_callback
+                )
+                self._out_stream.start_stream()
+                logger.info("Silent keepalive render feeder active on speakers")
+            except Exception as out_err:
+                logger.warning(f"Could not start silent keepalive feeder: {out_err}")
+
             self._in_stream.start_stream()
             logger.info("Dedicated audio loopback capture active")
 
@@ -134,6 +153,14 @@ class AudioLoopbackManager:
             except Exception:
                 pass
             self._in_stream = None
+
+        if self._out_stream:
+            try:
+                self._out_stream.stop_stream()
+                self._out_stream.close()
+            except Exception:
+                pass
+            self._out_stream = None
 
         if self._pa:
             try:
