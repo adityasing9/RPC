@@ -263,12 +263,14 @@ export class AudioStreamClient {
         console.warn('Audio play auto-resume:', e);
       });
 
-      // Visualizer: route MediaStream to AnalyserNode only
+      // Visualizer: route MediaStream to AnalyserNode ONLY.
+      // Disconnect AnalyserNode from destination so audio is not played twice (prevents echo/flanging/distortion)!
       if (this.audioCtx && this.analyserNode) {
         try {
           if (this.mediaStreamSource) {
             this.mediaStreamSource.disconnect();
           }
+          this.analyserNode.disconnect();
           this.mediaStreamSource = this.audioCtx.createMediaStreamSource(stream);
           this.mediaStreamSource.connect(this.analyserNode);
         } catch (visErr) {
@@ -286,16 +288,9 @@ export class AudioStreamClient {
       type: offerData.type as RTCSdpType
     }));
 
-    // 4. Create Answer and ensure 256kbps stereo negotiation
+    // 4. Create Answer and set directly without SDP mutations
     const answer = await this.pc.createAnswer();
-    let answerSdp = answer.sdp || '';
-    if (!answerSdp.includes('stereo=1')) {
-      answerSdp = answerSdp.replace(
-        /a=rtpmap:(\d+) opus\/48000\/2/g,
-        'a=rtpmap:$1 opus/48000/2\r\na=fmtp:$1 minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=256000'
-      );
-    }
-    await this.pc.setLocalDescription(new RTCSessionDescription({ sdp: answerSdp, type: answer.type }));
+    await this.pc.setLocalDescription(answer);
 
     // 5. Gather candidates briefly (up to 400ms)
     await new Promise<void>((resolve) => {
@@ -341,6 +336,14 @@ export class AudioStreamClient {
   }
 
   private async startWebSocketStream(token: string): Promise<void> {
+    // In WebSocket mode, route DSP chain to audioCtx destination
+    if (this.analyserNode && this.audioCtx) {
+      try {
+        this.analyserNode.disconnect();
+        this.analyserNode.connect(this.audioCtx.destination);
+      } catch {}
+    }
+
     // Reset Buffer & DSP State
     this.ringBuffer.fill(0);
     this.writeFrameIdx = 0;

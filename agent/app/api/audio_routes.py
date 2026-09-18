@@ -328,8 +328,8 @@ class WebRTCLoopbackTrack(MediaStreamTrack):
         self.bytes_per_frame = self.frame_samples * self.channels * 2  # 16-bit PCM = 2 bytes/sample
 
     async def recv(self):
-        # Keep latency ultra-low: discard stale audio chunks if queue backed up (>80ms)
-        while self.queue.qsize() > 4:
+        # Discard stale audio chunks only if queue backed up significantly (>300ms)
+        while self.queue.qsize() > 15:
             try:
                 self.queue.get_nowait()
             except asyncio.QueueEmpty:
