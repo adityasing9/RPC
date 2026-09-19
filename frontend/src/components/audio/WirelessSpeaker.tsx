@@ -528,6 +528,15 @@ export const WirelessSpeaker: React.FC = () => {
       ) : (
         /* Bluetooth Devices View */
         <div className="mt-4 space-y-3 relative z-10 animate-fadeIn">
+          {/* Notice for phone speaker */}
+          <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200/90 flex items-start gap-2.5">
+            <Smartphone className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+            <div className="text-[11px] leading-relaxed">
+              <strong className="text-white block font-semibold mb-0.5">Want this phone to play laptop sound?</strong>
+              Android does not support acting as a Bluetooth speaker receiver for Windows. To hear laptop sound on this phone, tap the <button onClick={() => setAudioTab('wifi')} className="underline font-bold text-brand-primary">Phone Speaker (Wi-Fi Studio)</button> tab above!
+            </div>
+          </div>
+
           {/* Bluetooth Action Bar */}
           <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-4 rounded-2xl bg-dark-950 border border-blue-500/20">
             <div className="flex items-center gap-3">
@@ -535,8 +544,8 @@ export const WirelessSpeaker: React.FC = () => {
                 <Bluetooth className="w-5 h-5" />
               </div>
               <div>
-                <h4 className="text-xs font-bold text-white">Direct Bluetooth Audio</h4>
-                <p className="text-[11px] text-slate-400">Connect laptop directly to Bluetooth speakers, earbuds, or phones</p>
+                <h4 className="text-xs font-bold text-white">External Bluetooth Speakers & Headphones</h4>
+                <p className="text-[11px] text-slate-400">Route laptop audio to external Bluetooth speakers or earbuds</p>
               </div>
             </div>
             <div className="flex items-center gap-2 w-full sm:w-auto">
