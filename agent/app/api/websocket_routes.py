@@ -92,25 +92,31 @@ async def websocket_telemetry_endpoint(
                     dx = float(msg.get("dx", 0))
                     dy = float(msg.get("dy", 0))
                     sens = float(msg.get("sensitivity", 1.0))
+                    logger.debug(f"WS mouse.move dx={dx} dy={dy} sens={sens}")
                     move_mouse_relative(dx, dy, sens)
                 elif msg_type == "input.mouse.click":
                     btn = msg.get("button", "left")
                     act = msg.get("action", "click")
+                    logger.info(f"WS mouse.click btn={btn} act={act}")
                     mouse_click(btn, act)
                 elif msg_type == "input.mouse.click_percent":
                     x_pct = float(msg.get("x_percent", 0.5))
                     y_pct = float(msg.get("y_percent", 0.5))
                     btn = msg.get("button", "left")
                     act = msg.get("action", "click")
+                    logger.info(f"WS mouse.click_percent x={x_pct} y={y_pct}")
                     click_mouse_at_percent(x_pct, y_pct, btn, act)
                 elif msg_type == "input.mouse.scroll":
                     delta = int(msg.get("delta", 0))
+                    logger.debug(f"WS mouse.scroll delta={delta}")
                     mouse_scroll(delta)
                 elif msg_type == "input.keyboard.text":
                     text = msg.get("text", "")
+                    logger.info(f"WS keyboard.text len={len(text)}")
                     send_text(text)
                 elif msg_type == "input.keyboard.key":
                     key = msg.get("key", "")
+                    logger.info(f"WS keyboard.key key={key}")
                     send_special_key(key)
                 elif msg_type == "media.volume.up":
                     steps = int(msg.get("steps", 1))
@@ -122,10 +128,13 @@ async def websocket_telemetry_endpoint(
                     mute = msg.get("mute")
                     volume_mute_toggle(desired_mute=mute)
                 elif msg_type == "media.playback.play_pause":
+                    logger.info("WS media.playback.play_pause")
                     media_play_pause()
                 elif msg_type == "media.playback.next":
+                    logger.info("WS media.playback.next")
                     media_next()
                 elif msg_type == "media.playback.prev":
+                    logger.info("WS media.playback.prev")
                     media_prev()
                 elif msg_type == "ping":
                     await websocket.send_text(json.dumps({"type": "pong", "time": msg.get("time")}))

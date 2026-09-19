@@ -1,4 +1,8 @@
-"""Windows multimedia key controller with direct Core Audio hardware endpoint volume support."""
+"""Windows multimedia key controller with direct Core Audio hardware endpoint volume support.
+
+Media key simulation (play/pause, next, prev, stop) and keybd_event fallbacks
+run on the same dedicated input worker thread to ensure desktop attachment.
+"""
 import sys
 import time
 import logging
@@ -18,31 +22,17 @@ VK_MEDIA_PLAY_PAUSE = 0xB3
 KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_KEYUP = 0x0002
 
-def ensure_interactive_desktop():
-    """Ensure current thread is attached to the active user's interactive desktop."""
-    if not sys.platform.startswith("win"):
-        return
-    import ctypes
-    user32 = ctypes.windll.user32
-    hdesk = user32.OpenInputDesktop(0, False, 0x01FF)
-    if not hdesk:
-        hdesk = user32.OpenDesktopW("default", 0, False, 0x01FF)
-    if hdesk:
-        user32.SetThreadDesktop(hdesk)
-        user32.CloseDesktop(hdesk)
 
-def _send_vk(vk_code: int):
-    """Simulate keypress for virtual key code using ctypes SendInput / keybd_event."""
+def _send_vk_on_worker(vk_code: int):
+    """Send a virtual key press via the dedicated input worker thread."""
     if not sys.platform.startswith("win"):
         logger.warning(f"Simulate VK {hex(vk_code)} called on non-Windows")
         return
-    ensure_interactive_desktop()
-    import ctypes
-    user32 = ctypes.windll.user32
-    scan = user32.MapVirtualKeyW(vk_code, 0)
-    user32.keybd_event(vk_code, scan, KEYEVENTF_EXTENDEDKEY, 0)
-    time.sleep(0.02)
-    user32.keybd_event(vk_code, scan, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
+    # Import here to use the input worker thread which has desktop attached
+    from app.input.controller import _input_queue, _ensure_worker
+    _ensure_worker()
+    _input_queue.put({"action": "key_press", "vk": vk_code})
+
 
 def _get_endpoint_volume():
     """Retrieve Windows default playback device master EndpointVolume interface."""
@@ -54,6 +44,7 @@ def _get_endpoint_volume():
     except Exception as e:
         logger.debug(f"pycaw endpoint volume unavailable: {e}")
     return None
+
 
 def get_volume_status() -> dict:
     """Query current Windows master volume and hardware mute state."""
@@ -67,6 +58,7 @@ def get_volume_status() -> dict:
         except Exception as e:
             logger.debug(f"Failed to query volume status via pycaw: {e}")
     return {"muted": False, "volume": 0.5}
+
 
 def volume_mute_toggle(desired_mute: Optional[bool] = None) -> dict:
     """Toggle or explicitly set Windows master output mute without affecting WASAPI loopback."""
@@ -82,16 +74,10 @@ def volume_mute_toggle(desired_mute: Optional[bool] = None) -> dict:
         except Exception as e:
             logger.warning(f"Failed to toggle mute via pycaw: {e}")
 
-    # Fallback to pyautogui or keybd_event
-    ensure_interactive_desktop()
-    try:
-        import pyautogui
-        pyautogui.FAILSAFE = False
-        pyautogui.press("volumemute")
-    except Exception:
-        _send_vk(VK_VOLUME_MUTE)
-
+    # Fallback: send VK via worker thread
+    _send_vk_on_worker(VK_VOLUME_MUTE)
     return {"action": "volume_mute_toggle", "muted": None}
+
 
 def volume_up(steps: int = 1) -> dict:
     ep = _get_endpoint_volume()
@@ -105,16 +91,11 @@ def volume_up(steps: int = 1) -> dict:
         except Exception as e:
             logger.warning(f"pycaw volume_up failed: {e}")
 
-    ensure_interactive_desktop()
-    try:
-        import pyautogui
-        pyautogui.FAILSAFE = False
-        for _ in range(max(1, min(steps, 10))):
-            pyautogui.press("volumeup")
-    except Exception:
-        for _ in range(max(1, min(steps, 10))):
-            _send_vk(VK_VOLUME_UP)
+    # Fallback: send VK via worker thread
+    for _ in range(max(1, min(steps, 10))):
+        _send_vk_on_worker(VK_VOLUME_UP)
     return {"action": "volume_up", "steps": steps}
+
 
 def volume_down(steps: int = 1) -> dict:
     ep = _get_endpoint_volume()
@@ -128,53 +109,31 @@ def volume_down(steps: int = 1) -> dict:
         except Exception as e:
             logger.warning(f"pycaw volume_down failed: {e}")
 
-    ensure_interactive_desktop()
-    try:
-        import pyautogui
-        pyautogui.FAILSAFE = False
-        for _ in range(max(1, min(steps, 10))):
-            pyautogui.press("volumedown")
-    except Exception:
-        for _ in range(max(1, min(steps, 10))):
-            _send_vk(VK_VOLUME_DOWN)
+    # Fallback: send VK via worker thread
+    for _ in range(max(1, min(steps, 10))):
+        _send_vk_on_worker(VK_VOLUME_DOWN)
     return {"action": "volume_down", "steps": steps}
 
+
 def media_play_pause() -> dict:
-    ensure_interactive_desktop()
-    try:
-        import pyautogui
-        pyautogui.FAILSAFE = False
-        pyautogui.press("playpause")
-    except Exception:
-        _send_vk(VK_MEDIA_PLAY_PAUSE)
+    _send_vk_on_worker(VK_MEDIA_PLAY_PAUSE)
+    logger.info("Media play/pause sent via input worker")
     return {"action": "media_play_pause"}
 
+
 def media_next() -> dict:
-    ensure_interactive_desktop()
-    try:
-        import pyautogui
-        pyautogui.FAILSAFE = False
-        pyautogui.press("nexttrack")
-    except Exception:
-        _send_vk(VK_MEDIA_NEXT_TRACK)
+    _send_vk_on_worker(VK_MEDIA_NEXT_TRACK)
+    logger.info("Media next sent via input worker")
     return {"action": "media_next"}
 
+
 def media_prev() -> dict:
-    ensure_interactive_desktop()
-    try:
-        import pyautogui
-        pyautogui.FAILSAFE = False
-        pyautogui.press("prevtrack")
-    except Exception:
-        _send_vk(VK_MEDIA_PREV_TRACK)
+    _send_vk_on_worker(VK_MEDIA_PREV_TRACK)
+    logger.info("Media prev sent via input worker")
     return {"action": "media_prev"}
 
+
 def media_stop() -> dict:
-    ensure_interactive_desktop()
-    try:
-        import pyautogui
-        pyautogui.FAILSAFE = False
-        pyautogui.press("stop")
-    except Exception:
-        _send_vk(VK_MEDIA_STOP)
+    _send_vk_on_worker(VK_MEDIA_STOP)
+    logger.info("Media stop sent via input worker")
     return {"action": "media_stop"}
