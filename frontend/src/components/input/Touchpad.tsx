@@ -44,7 +44,7 @@ export const Touchpad: React.FC = () => {
   const [keyboardText, setKeyboardText] = useState<string>('');
 
   // Live Screen Stream State
-  const [isLiveActive, setIsLiveActive] = useState<boolean>(true);
+  const [isLiveActive, setIsLiveActive] = useState<boolean>(false);
   const [fps, setFps] = useState<number>(10);
   const [quality, setQuality] = useState<number>(50);
   const [streamKey, setStreamKey] = useState<number>(Date.now());
