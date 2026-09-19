@@ -387,6 +387,32 @@ class ApiService {
     }
   }
 
+  // Windows Audio Playback Output Devices
+  async getAudioOutputDevices(): Promise<{
+    id: string;
+    name: string;
+    state: string;
+    is_active: boolean;
+    is_default: boolean;
+    is_bluetooth: boolean;
+  }[]> {
+    try {
+      const res = await this.client.get('/audio/output/devices');
+      return res.data?.devices || [];
+    } catch {
+      return [];
+    }
+  }
+
+  async setDefaultAudioOutput(deviceId: string): Promise<boolean> {
+    try {
+      const res = await this.client.post('/audio/output/set-default', { device_id: deviceId });
+      return !!res.data?.success;
+    } catch {
+      return false;
+    }
+  }
+
   // WebRTC Audio Streaming
   async requestWebRtcOffer(): Promise<{ sessionId: string; sdp: string; type: string } | null> {
     try {

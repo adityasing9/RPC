@@ -15,7 +15,8 @@ import {
   Headphones,
   ShieldCheck,
   ExternalLink,
-  RefreshCw
+  RefreshCw,
+  Check
 } from 'lucide-react';
 import { sharedAudioClient } from '../../services/audioStream';
 import type { LatencyPreset } from '../../services/audioStream';
@@ -34,6 +35,15 @@ export const WirelessSpeaker: React.FC = () => {
   const [frequencies, setFrequencies] = useState<number[]>(new Array(16).fill(0));
   const [bluetoothDevices, setBluetoothDevices] = useState<{ name: string; status: string; connected: boolean }[]>([]);
   const [loadingBt, setLoadingBt] = useState<boolean>(false);
+  const [outputDevices, setOutputDevices] = useState<{
+    id: string;
+    name: string;
+    state: string;
+    is_active: boolean;
+    is_default: boolean;
+    is_bluetooth: boolean;
+  }[]>([]);
+  const [settingDefaultId, setSettingDefaultId] = useState<string | null>(null);
 
   const animFrameRef = useRef<number | null>(null);
   const freqDataRef = useRef<Uint8Array>(new Uint8Array(32));
@@ -153,14 +163,47 @@ export const WirelessSpeaker: React.FC = () => {
   const fetchBluetoothDevices = async () => {
     setLoadingBt(true);
     try {
-      const devs = await api.getBluetoothAudioDevices();
-      setBluetoothDevices(devs);
+      const [btDevs, outDevs] = await Promise.all([
+        api.getBluetoothAudioDevices(),
+        api.getAudioOutputDevices()
+      ]);
+      setBluetoothDevices(btDevs);
+      setOutputDevices(outDevs);
     } catch (e) {
-      console.error('Failed to fetch Bluetooth devices', e);
+      console.error('Failed to fetch Bluetooth or output devices', e);
     } finally {
       setLoadingBt(false);
     }
   };
+
+  const fetchOutputDevices = async () => {
+    try {
+      const devs = await api.getAudioOutputDevices();
+      setOutputDevices(devs);
+    } catch (e) {
+      console.error('Failed to fetch output devices', e);
+    }
+  };
+
+  const handleSetDefaultOutput = async (deviceId: string) => {
+    setSettingDefaultId(deviceId);
+    try {
+      const ok = await api.setDefaultAudioOutput(deviceId);
+      if (ok) {
+        await fetchOutputDevices();
+      }
+    } catch (e) {
+      console.error('Failed to set default output device', e);
+    } finally {
+      setSettingDefaultId(null);
+    }
+  };
+
+  useEffect(() => {
+    if (audioTab === 'bluetooth') {
+      fetchBluetoothDevices();
+    }
+  }, [audioTab]);
 
   const handleOpenBluetoothSettings = async () => {
     try {
@@ -513,6 +556,90 @@ export const WirelessSpeaker: React.FC = () => {
                 <span>Open PC Bluetooth</span>
               </button>
             </div>
+          </div>
+
+          {/* Windows Audio Playback Routing (Set Default Device) */}
+          <div className="p-4 rounded-2xl bg-dark-950 border border-dark-800">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <span className="text-[11px] font-bold text-slate-200 flex items-center gap-1.5">
+                  <Volume2 className="w-3.5 h-3.5 text-brand-primary" />
+                  Laptop Audio Output Routing
+                </span>
+                <p className="text-[10px] text-slate-400 mt-0.5">
+                  Select which connected speaker, headphones, or Bluetooth audio device the laptop outputs to
+                </p>
+              </div>
+              <span className="text-[10px] font-mono text-slate-500">{outputDevices.length} endpoints</span>
+            </div>
+
+            {outputDevices.length > 0 ? (
+              <div className="space-y-2">
+                {outputDevices.map((dev) => (
+                  <div
+                    key={dev.id}
+                    className={`p-3 rounded-xl border transition-all flex items-center justify-between gap-3 ${
+                      dev.is_default
+                        ? 'bg-emerald-500/10 border-emerald-500/40 shadow-sm shadow-emerald-500/10'
+                        : 'bg-dark-900/80 border-dark-800 hover:border-dark-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className={`p-2 rounded-lg border shrink-0 ${
+                        dev.is_default
+                          ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                          : dev.is_bluetooth
+                          ? 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+                          : 'bg-dark-950 text-slate-400 border-dark-800'
+                      }`}>
+                        {dev.is_bluetooth ? <Headphones className="w-4 h-4" /> : <Laptop className="w-4 h-4" />}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-semibold text-white truncate">{dev.name}</span>
+                          {dev.is_default && (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0">
+                              DEFAULT
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-slate-400 block font-mono truncate">
+                          {dev.is_active ? 'Active / Connected' : dev.state}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="shrink-0">
+                      {dev.is_default ? (
+                        <div className="flex items-center gap-1 text-[11px] font-bold text-emerald-400 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Active Output</span>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => handleSetDefaultOutput(dev.id)}
+                          disabled={settingDefaultId === dev.id}
+                          className="px-3 py-1 rounded-lg text-xs font-bold border transition-all active:scale-95 bg-dark-950 hover:bg-brand-primary hover:text-dark-950 border-dark-700 text-slate-300 hover:border-brand-primary flex items-center gap-1.5"
+                        >
+                          {settingDefaultId === dev.id ? (
+                            <>
+                              <RefreshCw className="w-3 h-3 animate-spin" />
+                              <span>Switching...</span>
+                            </>
+                          ) : (
+                            <span>Set as Output</span>
+                          )}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="py-4 text-center text-xs text-slate-400">
+                <span>Click Refresh to scan Windows audio outputs.</span>
+              </div>
+            )}
           </div>
 
           {/* Paired Bluetooth Audio Devices List */}

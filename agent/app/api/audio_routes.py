@@ -254,6 +254,39 @@ async def open_bluetooth_settings(current_device: PairedDevice = Depends(get_cur
         logger.error(f"Failed to open Bluetooth settings: {e}")
         return {"success": False, "error": str(e)}
 
+from pydantic import BaseModel
+from app.audio.audio_output import list_audio_outputs, set_default_audio_output
+
+class SetDefaultOutputRequest(BaseModel):
+    device_id: str
+
+@router.get("/output/devices")
+async def get_audio_output_devices(current_device: PairedDevice = Depends(get_current_device)):
+    """Return all Windows audio playback output endpoints with default/active state."""
+    try:
+        devices = list_audio_outputs()
+        return {"success": True, "devices": devices}
+    except Exception as e:
+        logger.error(f"Failed to list audio output devices: {e}")
+        return {"success": False, "devices": [], "error": str(e)}
+
+@router.post("/output/set-default")
+async def set_default_output_device(
+    payload: SetDefaultOutputRequest,
+    current_device: PairedDevice = Depends(get_current_device)
+):
+    """Switch the system default playback audio endpoint to the specified device ID."""
+    if not payload.device_id:
+        raise HTTPException(status_code=400, detail="Missing device_id")
+    try:
+        ok = set_default_audio_output(payload.device_id)
+        if ok:
+            return {"success": True, "message": f"Default audio output switched to {payload.device_id}"}
+        return {"success": False, "message": "Failed to switch audio output device"}
+    except Exception as e:
+        logger.error(f"Error setting default audio output: {e}")
+        return {"success": False, "error": str(e)}
+
 import fractions
 import time
 import uuid
